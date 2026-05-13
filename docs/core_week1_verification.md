@@ -6,7 +6,7 @@ This note records the local checks for the Member B core/memory path.
 
 - `rtl/core/dot_product_engine.sv`: serial signed dot product.
 - `rtl/core/causal_mask_unit.sv`: causal score masking.
-- `rtl/core/online_softmax_engine.sv`: online max/denominator update with a deterministic fixed-point exp approximation.
+- `rtl/core/online_softmax_engine.sv`: online max/denominator update with a deterministic Q0.8 fixed-point exp LUT.
 - `rtl/core/value_accumulator.sv`: streaming softmax-weighted V accumulation.
 - `rtl/core/normalizer.sv`: final accumulator normalization.
 - `rtl/core/quantize_saturate.sv`: signed output saturation.
@@ -30,6 +30,7 @@ The script compiles and runs bit-exact checks for:
 - `tb/sv/tb_buffers_bitexact.sv`
 - `tb/sv/tb_flash_core_smoke.sv`
 - `tb/sv/tb_flash_core_matrix16_bitexact.sv`
+- `tb/sv/tb_flash_core_param_bitexact.sv`, compiled with multiple parameter sets
 
 ## Expected Result
 
@@ -47,3 +48,16 @@ The larger matrix core test runs `S_LEN=16`, `D_MODEL=16`, `BK=4`, enables
 causal masking, checks Q row request order, all K/V tile requests, and every
 output word with bit-exact comparison against the same fixed-point reference
 model.
+
+The parameterized full-core test is compiled multiple times to cover additional
+shape and control combinations:
+
+| S_LEN | D_MODEL | BK | Causal | Scale |
+|---:|---:|---:|---:|---:|
+| 5 | 3 | 8 | yes | 256 |
+| 7 | 8 | 3 | yes | 384 |
+| 9 | 5 | 4 | no | 512 |
+| 13 | 12 | 5 | yes | 320 |
+
+These cases cover `BK > S_LEN`, non-divisible final tiles, non-causal attention,
+different model widths, and different Q8.8 scale values.

@@ -5,7 +5,7 @@
 The core implementation is an integration-ready tiled FlashAttention-style
 compute path. It is AXI-agnostic: DMA/top provides Q rows and K/V tiles, while
 the core returns one normalized O row at a time. The current softmax uses a
-deterministic fixed-point exponential approximation so RTL and testbench can be
+deterministic fixed-point exponential lookup table so RTL and testbench can be
 checked bit-for-bit.
 
 ### Core Control Flow
@@ -68,16 +68,19 @@ else:
     l = l + new_weight
 ```
 
-Weights are Q0.8 values. The current `exp_approx` is a compact deterministic
-rational approximation:
+Weights are Q0.8 values. The current `exp_approx` is a 64-entry lookup table
+for negative deltas. The delta input is treated as Q8.8; the lookup rounds to
+the nearest 1/8 step and covers approximately `0.0` through `7.875`:
 
 ```text
 exp_approx(delta) = 1.0                         when delta >= 0
-exp_approx(delta) = 1.0 / (1.0 + abs(delta))     when delta < 0
+exp_approx(delta) = LUT(round(abs(delta) * 8))   when -7.875 <= delta < 0
+exp_approx(delta) = 0.0                         when delta < -7.875
 ```
 
 This is intentionally isolated in one module so it can later be replaced by a
-more accurate LUT without changing the core handshake.
+larger LUT, interpolation, or a model-derived table without changing the core
+handshake.
 
 ### Value Accumulation And Normalization
 

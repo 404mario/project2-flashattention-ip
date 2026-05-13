@@ -1,15 +1,21 @@
 `timescale 1ns/1ps
 
-module tb_flash_core_smoke;
-    localparam int S_LEN       = 4;
-    localparam int D_MODEL     = 4;
-    localparam int BK          = 2;
-    localparam int DATA_W      = 16;
-    localparam int ACC_W       = 48;
-    localparam int FRAC_W      = 8;
-    localparam int WEIGHT_FRAC = 8;
-    localparam int WEIGHT_ONE  = 1 << WEIGHT_FRAC;
-    localparam int SCALE_Q8_8  = 256;
+module tb_flash_core_param_bitexact;
+    parameter int S_LEN       = 7;
+    parameter int D_MODEL     = 8;
+    parameter int BK          = 3;
+    parameter int DATA_W      = 16;
+    parameter int ACC_W       = 48;
+    parameter int FRAC_W      = 8;
+    parameter int WEIGHT_FRAC = 8;
+    parameter int SCALE_Q8_8  = 384;
+    parameter int CAUSAL_EN   = 1;
+
+    localparam int WEIGHT_ONE   = 1 << WEIGHT_FRAC;
+    localparam int ROW_W        = (S_LEN <= 1) ? 1 : $clog2(S_LEN);
+    localparam int LEN_W        = (BK <= 1) ? 1 : $clog2(BK + 1);
+    localparam int TILES_PER_ROW = (S_LEN + BK - 1) / BK;
+    localparam int TIMEOUT_CYCLES = 200000;
 
     logic clk;
     logic rst_n;
@@ -22,15 +28,15 @@ module tb_flash_core_smoke;
     logic signed [31:0] scale;
 
     logic q_req_valid;
-    logic [$clog2(S_LEN)-1:0] q_req_row;
+    logic [ROW_W-1:0] q_req_row;
     logic q_req_ready;
     logic q_data_valid;
     logic signed [DATA_W-1:0] q_data [0:D_MODEL-1];
     logic q_data_ready;
 
     logic kv_req_valid;
-    logic [$clog2(S_LEN)-1:0] kv_req_start;
-    logic [$clog2(BK+1)-1:0] kv_req_len;
+    logic [ROW_W-1:0] kv_req_start;
+    logic [LEN_W-1:0] kv_req_len;
     logic kv_req_ready;
     logic kv_data_valid;
     logic signed [DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1];
@@ -38,12 +44,14 @@ module tb_flash_core_smoke;
     logic kv_data_ready;
 
     logic o_valid;
-    logic [$clog2(S_LEN)-1:0] o_row;
+    logic [ROW_W-1:0] o_row;
     wire signed [DATA_W-1:0] o_data [0:D_MODEL-1];
     logic o_ready;
 
     int d;
     int b;
+    int q_requests;
+    int kv_requests;
     int output_rows;
 
     flash_core #(
@@ -87,19 +95,19 @@ module tb_flash_core_smoke;
 
     function automatic longint signed q_value(input int row, input int col);
         begin
-            q_value = (row + col + 1) <<< 4;
+            q_value = ((((row * 3 + col * 5 + 7) % 17) - 8) <<< 4);
         end
     endfunction
 
-    function automatic longint signed k_value(input int key, input int col);
+    function automatic longint signed k_value(input int key_row, input int col);
         begin
-            k_value = (key + col + 1) <<< 4;
+            k_value = ((((key_row * 5 + col * 7 + 11) % 19) - 9) <<< 4);
         end
     endfunction
 
-    function automatic longint signed v_value(input int key, input int col);
+    function automatic longint signed v_value(input int key_row, input int col);
         begin
-            v_value = (key + col + 2) <<< 4;
+            v_value = ((((key_row * 7 + col * 3 + 5) % 23) - 11) <<< 3);
         end
     endfunction
 
@@ -130,7 +138,7 @@ module tb_flash_core_smoke;
 
     function automatic logic signed [DATA_W-1:0] expected_o(input int row, input int out_col);
         longint signed m;
-        longint unsigned l;
+        longint signed l;
         longint signed acc;
         longint signed score;
         longint signed old_scale;
@@ -141,7 +149,7 @@ module tb_flash_core_smoke;
             acc = 0;
 
             for (int key = 0; key < S_LEN; key = key + 1) begin
-                if (key <= row) begin
+                if ((CAUSAL_EN == 0) || (key <= row)) begin
                     score = scaled_score(row, key);
 
                     if (l == 0) begin
@@ -157,14 +165,14 @@ module tb_flash_core_smoke;
                     end else begin
                         old_scale = WEIGHT_ONE;
                         new_weight = exp_approx_weight(score - m);
-                        l = l + new_weight;
+                        l = ((l * old_scale) >>> WEIGHT_FRAC) + new_weight;
                     end
 
                     acc = ((acc * old_scale) >>> WEIGHT_FRAC) + (new_weight * v_value(key, out_col));
                 end
             end
 
-            expected_o = (l == 0) ? '0 : saturate_to_data(acc / longint'(l));
+            expected_o = (l == 0) ? '0 : saturate_to_data(acc / l);
         end
     endfunction
 
@@ -172,7 +180,10 @@ module tb_flash_core_smoke;
         if (!rst_n) begin
             q_data_valid  <= 1'b0;
             kv_data_valid <= 1'b0;
+            q_requests    <= 0;
+            kv_requests   <= 0;
             output_rows   <= 0;
+
             for (d = 0; d < D_MODEL; d = d + 1) begin
                 q_data[d] <= '0;
             end
@@ -187,25 +198,50 @@ module tb_flash_core_smoke;
             kv_data_valid <= 1'b0;
 
             if (q_req_valid && q_req_ready) begin
+                if (q_req_row !== q_requests[ROW_W-1:0]) begin
+                    $display("FAIL Q request got row=%0d expected=%0d", q_req_row, q_requests);
+                    $fatal(1);
+                end
+
                 for (d = 0; d < D_MODEL; d = d + 1) begin
-                    q_data[d] <= q_value(q_req_row, d);
+                    q_data[d] <= q_value(q_requests, d);
                 end
                 q_data_valid <= 1'b1;
+                q_requests <= q_requests + 1;
             end
 
             if (kv_req_valid && kv_req_ready) begin
+                int expected_tile;
+                int expected_start;
+                int expected_len;
+
+                expected_tile = kv_requests % TILES_PER_ROW;
+                expected_start = expected_tile * BK;
+                expected_len = S_LEN - expected_start;
+                if (expected_len > BK) begin
+                    expected_len = BK;
+                end
+
+                if ((kv_req_start !== expected_start[ROW_W-1:0]) ||
+                    (kv_req_len !== expected_len[LEN_W-1:0])) begin
+                    $display("FAIL K/V request index=%0d got start=%0d len=%0d expected start=%0d len=%0d",
+                             kv_requests, kv_req_start, kv_req_len, expected_start, expected_len);
+                    $fatal(1);
+                end
+
                 for (b = 0; b < BK; b = b + 1) begin
                     for (d = 0; d < D_MODEL; d = d + 1) begin
-                        k_tile[b][d] <= k_value(kv_req_start + b, d);
-                        v_tile[b][d] <= v_value(kv_req_start + b, d);
+                        k_tile[b][d] <= k_value(expected_start + b, d);
+                        v_tile[b][d] <= v_value(expected_start + b, d);
                     end
                 end
                 kv_data_valid <= 1'b1;
+                kv_requests <= kv_requests + 1;
             end
 
             if (o_valid && o_ready) begin
-                if (o_row !== output_rows[$clog2(S_LEN)-1:0]) begin
-                    $display("FAIL output row order got=%0d expected=%0d", o_row, output_rows);
+                if (o_row !== output_rows[ROW_W-1:0]) begin
+                    $display("FAIL O row got=%0d expected=%0d", o_row, output_rows);
                     $fatal(1);
                 end
 
@@ -218,20 +254,21 @@ module tb_flash_core_smoke;
                     end
                 end
 
+                $display("PASS param core S=%0d D=%0d BK=%0d causal=%0d row=%0d o0=%0d hex=%04h",
+                         S_LEN, D_MODEL, BK, CAUSAL_EN, o_row, o_data[0], o_data[0]);
                 output_rows <= output_rows + 1;
-                $display("PASS small full-core row %0d bit-exact", o_row);
             end
         end
     end
 
     initial begin
-        $dumpfile("tb_flash_core_smoke.vcd");
-        $dumpvars(0, tb_flash_core_smoke);
+        $dumpfile("tb_flash_core_param_bitexact.vcd");
+        $dumpvars(0, tb_flash_core_param_bitexact);
 
         clk          = 1'b0;
         rst_n        = 1'b0;
         start        = 1'b0;
-        causal_en    = 1'b1;
+        causal_en    = (CAUSAL_EN != 0);
         neg_large    = -32'sd32768;
         scale        = SCALE_Q8_8;
         q_req_ready  = 1'b1;
@@ -251,8 +288,9 @@ module tb_flash_core_smoke;
                 wait (done);
             end
             begin
-                repeat (600) @(posedge clk);
-                $display("FAIL timeout waiting for flash_core done");
+                repeat (TIMEOUT_CYCLES) @(posedge clk);
+                $display("FAIL timeout waiting for param core done S=%0d D=%0d BK=%0d causal=%0d",
+                         S_LEN, D_MODEL, BK, CAUSAL_EN);
                 $fatal(1);
             end
         join_any
@@ -263,12 +301,21 @@ module tb_flash_core_smoke;
             $display("FAIL core error asserted");
             $fatal(1);
         end
+        if (q_requests != S_LEN) begin
+            $display("FAIL q_requests=%0d expected=%0d", q_requests, S_LEN);
+            $fatal(1);
+        end
+        if (kv_requests != S_LEN * TILES_PER_ROW) begin
+            $display("FAIL kv_requests=%0d expected=%0d", kv_requests, S_LEN * TILES_PER_ROW);
+            $fatal(1);
+        end
         if (output_rows != S_LEN) begin
             $display("FAIL output_rows=%0d expected=%0d", output_rows, S_LEN);
             $fatal(1);
         end
 
-        $display("tb_flash_core_smoke PASS");
+        $display("tb_flash_core_param_bitexact PASS S=%0d D=%0d BK=%0d causal=%0d scale=%0d",
+                 S_LEN, D_MODEL, BK, CAUSAL_EN, SCALE_Q8_8);
         $finish;
     end
 endmodule

@@ -92,7 +92,9 @@ output logic signed [SCORE_W-1:0] score_out
 
 ### `online_softmax_engine`
 
-Updates one online softmax state. Weights are Q0.8 by default.
+Updates one online softmax state. Weights are Q0.8 by default. Negative
+score deltas use a 64-entry exp LUT with 1/8-step addressing; deltas beyond the
+covered range return zero weight.
 
 ```systemverilog
 input  logic score_valid

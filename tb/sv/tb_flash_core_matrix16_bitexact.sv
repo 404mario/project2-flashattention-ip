@@ -108,19 +108,7 @@ module tb_flash_core_matrix16_bitexact;
         end
     endfunction
 
-    function automatic longint unsigned exp_approx_weight(input longint signed delta);
-        longint unsigned abs_delta;
-        longint unsigned quotient;
-        begin
-            if (delta >= 0) begin
-                exp_approx_weight = WEIGHT_ONE;
-            end else begin
-                abs_delta = -delta;
-                quotient = (WEIGHT_ONE * WEIGHT_ONE) / (WEIGHT_ONE + abs_delta);
-                exp_approx_weight = (quotient > WEIGHT_ONE) ? WEIGHT_ONE : quotient;
-            end
-        end
-    endfunction
+    `include "flash_core_ref_exp_lut.svh"
 
     function automatic logic signed [DATA_W-1:0] saturate_to_data(input longint signed value);
         begin
