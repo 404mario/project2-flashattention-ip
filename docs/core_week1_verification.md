@@ -14,6 +14,8 @@ This note records the local checks for the Member B core/memory path.
 - `rtl/core/flash_core.sv`: tiled FlashAttention-style core using q/kv/o handshakes.
 - `rtl/mem/row_buffer.sv`: current row buffer skeleton.
 - `rtl/mem/tile_buffer.sv`: K/V tile buffer skeleton.
+- `docs/core_integration_contract.md`: frozen Member B integration contract for
+  request/data/output handshakes.
 
 ## Local Command
 
@@ -30,6 +32,7 @@ The script compiles and runs bit-exact checks for:
 - `tb/sv/tb_buffers_bitexact.sv`
 - `tb/sv/tb_flash_core_smoke.sv`
 - `tb/sv/tb_flash_core_matrix16_bitexact.sv`
+- `tb/sv/tb_flash_core_backpressure_bitexact.sv`
 - `tb/sv/tb_flash_core_param_bitexact.sv`, compiled with multiple parameter sets
 
 ## Expected Result
@@ -49,6 +52,12 @@ causal masking, checks Q row request order, all K/V tile requests, and every
 output word with bit-exact comparison against the same fixed-point reference
 model.
 
+The backpressure test runs `S_LEN=6`, `D_MODEL=5`, `BK=4`, enables causal
+masking, inserts deterministic stalls on `q_req_ready`, `q_data_valid`,
+`kv_req_ready`, `kv_data_valid`, and `o_ready`, pulses `start` again while the
+core is busy, and checks every output word bit-exact. It also verifies that
+`o_row` and `o_data` stay stable while `o_valid=1` and `o_ready=0`.
+
 The parameterized full-core test is compiled multiple times to cover additional
 shape and control combinations:
 
@@ -61,3 +70,18 @@ shape and control combinations:
 
 These cases cover `BK > S_LEN`, non-divisible final tiles, non-causal attention,
 different model widths, and different Q8.8 scale values.
+
+For the default baseline shape, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\sim\run_member_b_fullsize.ps1
+```
+
+This compiles `tb/sv/tb_flash_core_fullsize_smoke.sv` with `S_LEN=256`,
+`D_MODEL=64`, and `BK=16`. It is a no-deadlock/no-X smoke rather than a
+bit-exact full golden comparison, and it reports the measured core cycle count.
+The current serial-dot baseline result is:
+
+```text
+cycles=4404224 q_requests=256 kv_requests=4096 output_rows=256
+```

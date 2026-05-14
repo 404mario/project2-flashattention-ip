@@ -99,6 +99,15 @@ $CoreSources = @(
     (Join-Path $Root "rtl/core/flash_core.sv")
 )
 
+$BackpressureOut = Join-Path $Build "tb_flash_core_backpressure_bitexact.vvp"
+iverilog -g2012 -Wall `
+    -I $TbInclude `
+    -o $BackpressureOut `
+    $CoreSources `
+    (Join-Path $Root "tb/sv/tb_flash_core_backpressure_bitexact.sv")
+Assert-LastExit "flash_core backpressure bit-exact compile"
+Invoke-CheckedVvp $BackpressureOut
+
 $ParamTests = @(
     @{
         Name = "tb_flash_core_param_s5_d3_b8_causal"
