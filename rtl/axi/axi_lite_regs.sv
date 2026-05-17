@@ -1,0 +1,287 @@
+`timescale 1ns/1ps
+
+module axi_lite_regs #(
+    parameter int ADDR_W  = 32,
+    parameter int DATA_W  = 32,
+    parameter int D_MODEL = 64
+) (
+    input  logic                 clk,
+    input  logic                 rst_n,
+
+    input  logic [ADDR_W-1:0]    s_axil_awaddr,
+    input  logic                 s_axil_awvalid,
+    output logic                 s_axil_awready,
+
+    input  logic [DATA_W-1:0]    s_axil_wdata,
+    input  logic [DATA_W/8-1:0]  s_axil_wstrb,
+    input  logic                 s_axil_wvalid,
+    output logic                 s_axil_wready,
+
+    output logic [1:0]           s_axil_bresp,
+    output logic                 s_axil_bvalid,
+    input  logic                 s_axil_bready,
+
+    input  logic [ADDR_W-1:0]    s_axil_araddr,
+    input  logic                 s_axil_arvalid,
+    output logic                 s_axil_arready,
+
+    output logic [DATA_W-1:0]    s_axil_rdata,
+    output logic [1:0]           s_axil_rresp,
+    output logic                 s_axil_rvalid,
+    input  logic                 s_axil_rready,
+
+    output logic                 start_pulse,
+    output logic                 soft_reset,
+    output logic                 irq_en,
+    output logic                 causal_en,
+
+    output logic [63:0]          q_base,
+    output logic [63:0]          k_base,
+    output logic [63:0]          v_base,
+    output logic [63:0]          o_base,
+
+    output logic [31:0]          stride_bytes,
+    output logic signed [31:0]   neg_large,
+    output logic signed [31:0]   scale,
+
+    input  logic                 busy,
+    input  logic                 done,
+    input  logic                 error,
+    input  logic [31:0]          cycles,
+
+    output logic                 irq
+);
+
+    localparam logic [ADDR_W-1:0] REG_CTRL         = 'h00;
+    localparam logic [ADDR_W-1:0] REG_STATUS       = 'h04;
+    localparam logic [ADDR_W-1:0] REG_CFG          = 'h08;
+    localparam logic [ADDR_W-1:0] REG_Q_BASE_L     = 'h14;
+    localparam logic [ADDR_W-1:0] REG_Q_BASE_H     = 'h18;
+    localparam logic [ADDR_W-1:0] REG_K_BASE_L     = 'h1C;
+    localparam logic [ADDR_W-1:0] REG_K_BASE_H     = 'h20;
+    localparam logic [ADDR_W-1:0] REG_V_BASE_L     = 'h24;
+    localparam logic [ADDR_W-1:0] REG_V_BASE_H     = 'h28;
+    localparam logic [ADDR_W-1:0] REG_O_BASE_L     = 'h2C;
+    localparam logic [ADDR_W-1:0] REG_O_BASE_H     = 'h30;
+    localparam logic [ADDR_W-1:0] REG_STRIDE_BYTES = 'h34;
+    localparam logic [ADDR_W-1:0] REG_NEG_LARGE    = 'h38;
+    localparam logic [ADDR_W-1:0] REG_SCALE        = 'h3C;
+    localparam logic [ADDR_W-1:0] REG_CYCLES       = 'h40;
+
+    localparam logic signed [31:0] DEFAULT_NEG_LARGE = -32'sd32768;
+    localparam logic signed [31:0] DEFAULT_SCALE     =  32'sd32; // 0.125 in Q8.8
+    localparam logic [31:0]        DEFAULT_STRIDE    = D_MODEL * 2;
+
+    logic [ADDR_W-1:0] awaddr_q;
+    logic [DATA_W-1:0] wdata_q;
+    logic [DATA_W/8-1:0] wstrb_q;
+    logic awaddr_valid_q;
+    logic wdata_valid_q;
+
+    logic [ADDR_W-1:0] raddr_q;
+
+    logic irq_en_q;
+    logic causal_en_q;
+    logic [63:0] q_base_q;
+    logic [63:0] k_base_q;
+    logic [63:0] v_base_q;
+    logic [63:0] o_base_q;
+    logic [31:0] stride_bytes_q;
+    logic signed [31:0] neg_large_q;
+    logic signed [31:0] scale_q;
+
+    logic done_sticky_q;
+    logic error_sticky_q;
+
+    function automatic logic [31:0] apply_wstrb32(
+        input logic [31:0] old_value,
+        input logic [31:0] new_value,
+        input logic [3:0]  strb
+    );
+        logic [31:0] merged;
+        integer byte_i;
+        begin
+            merged = old_value;
+            for (byte_i = 0; byte_i < 4; byte_i = byte_i + 1) begin
+                if (strb[byte_i]) begin
+                    merged[byte_i*8 +: 8] = new_value[byte_i*8 +: 8];
+                end
+            end
+            apply_wstrb32 = merged;
+        end
+    endfunction
+
+    assign s_axil_awready = !awaddr_valid_q && !s_axil_bvalid;
+    assign s_axil_wready  = !wdata_valid_q  && !s_axil_bvalid;
+    assign s_axil_bresp   = 2'b00;
+    assign s_axil_arready = !s_axil_rvalid;
+    assign s_axil_rresp   = 2'b00;
+
+    assign irq_en      = irq_en_q;
+    assign causal_en   = causal_en_q;
+    assign q_base      = q_base_q;
+    assign k_base      = k_base_q;
+    assign v_base      = v_base_q;
+    assign o_base      = o_base_q;
+    assign stride_bytes = stride_bytes_q;
+    assign neg_large   = neg_large_q;
+    assign scale       = scale_q;
+    assign irq         = irq_en_q && done_sticky_q;
+
+    always_comb begin
+        s_axil_rdata = '0;
+        unique case (raddr_q)
+            REG_CTRL: begin
+                s_axil_rdata[2] = irq_en_q;
+            end
+            REG_STATUS: begin
+                s_axil_rdata[0] = busy;
+                s_axil_rdata[1] = done_sticky_q;
+                s_axil_rdata[2] = error_sticky_q;
+            end
+            REG_CFG: begin
+                s_axil_rdata[0] = causal_en_q;
+            end
+            REG_Q_BASE_L:      s_axil_rdata = q_base_q[31:0];
+            REG_Q_BASE_H:      s_axil_rdata = q_base_q[63:32];
+            REG_K_BASE_L:      s_axil_rdata = k_base_q[31:0];
+            REG_K_BASE_H:      s_axil_rdata = k_base_q[63:32];
+            REG_V_BASE_L:      s_axil_rdata = v_base_q[31:0];
+            REG_V_BASE_H:      s_axil_rdata = v_base_q[63:32];
+            REG_O_BASE_L:      s_axil_rdata = o_base_q[31:0];
+            REG_O_BASE_H:      s_axil_rdata = o_base_q[63:32];
+            REG_STRIDE_BYTES:  s_axil_rdata = stride_bytes_q;
+            REG_NEG_LARGE:     s_axil_rdata = neg_large_q;
+            REG_SCALE:         s_axil_rdata = scale_q;
+            REG_CYCLES:        s_axil_rdata = cycles;
+            default:           s_axil_rdata = '0;
+        endcase
+    end
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            awaddr_q        <= '0;
+            wdata_q         <= '0;
+            wstrb_q         <= '0;
+            awaddr_valid_q  <= 1'b0;
+            wdata_valid_q   <= 1'b0;
+            raddr_q         <= '0;
+            s_axil_bvalid   <= 1'b0;
+            s_axil_rvalid   <= 1'b0;
+
+            start_pulse     <= 1'b0;
+            soft_reset      <= 1'b0;
+
+            irq_en_q        <= 1'b0;
+            causal_en_q     <= 1'b0;
+            q_base_q        <= 64'd0;
+            k_base_q        <= 64'd0;
+            v_base_q        <= 64'd0;
+            o_base_q        <= 64'd0;
+            stride_bytes_q  <= DEFAULT_STRIDE;
+            neg_large_q     <= DEFAULT_NEG_LARGE;
+            scale_q         <= DEFAULT_SCALE;
+            done_sticky_q   <= 1'b0;
+            error_sticky_q  <= 1'b0;
+        end else begin
+            start_pulse <= 1'b0;
+            soft_reset  <= 1'b0;
+
+            if (done) begin
+                done_sticky_q <= 1'b1;
+            end
+            if (error) begin
+                error_sticky_q <= 1'b1;
+            end
+
+            if (s_axil_awvalid && s_axil_awready) begin
+                awaddr_q       <= s_axil_awaddr;
+                awaddr_valid_q <= 1'b1;
+            end
+
+            if (s_axil_wvalid && s_axil_wready) begin
+                wdata_q       <= s_axil_wdata;
+                wstrb_q       <= s_axil_wstrb;
+                wdata_valid_q <= 1'b1;
+            end
+
+            if (awaddr_valid_q && wdata_valid_q && !s_axil_bvalid) begin
+                unique case (awaddr_q)
+                    REG_CTRL: begin
+                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[0]) begin
+                            start_pulse   <= 1'b1;
+                            done_sticky_q <= 1'b0;
+                            error_sticky_q <= 1'b0;
+                        end
+                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[1]) begin
+                            soft_reset    <= 1'b1;
+                            done_sticky_q <= 1'b0;
+                            error_sticky_q <= 1'b0;
+                        end
+                        irq_en_q <= apply_wstrb32({29'd0, irq_en_q, 2'd0}, wdata_q, wstrb_q)[2];
+                    end
+                    REG_STATUS: begin
+                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[1]) begin
+                            done_sticky_q <= 1'b0;
+                        end
+                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[2]) begin
+                            error_sticky_q <= 1'b0;
+                        end
+                    end
+                    REG_CFG: begin
+                        causal_en_q <= apply_wstrb32({31'd0, causal_en_q}, wdata_q, wstrb_q)[0];
+                    end
+                    REG_Q_BASE_L: begin
+                        q_base_q[31:0] <= apply_wstrb32(q_base_q[31:0], wdata_q, wstrb_q);
+                    end
+                    REG_Q_BASE_H: begin
+                        q_base_q[63:32] <= apply_wstrb32(q_base_q[63:32], wdata_q, wstrb_q);
+                    end
+                    REG_K_BASE_L: begin
+                        k_base_q[31:0] <= apply_wstrb32(k_base_q[31:0], wdata_q, wstrb_q);
+                    end
+                    REG_K_BASE_H: begin
+                        k_base_q[63:32] <= apply_wstrb32(k_base_q[63:32], wdata_q, wstrb_q);
+                    end
+                    REG_V_BASE_L: begin
+                        v_base_q[31:0] <= apply_wstrb32(v_base_q[31:0], wdata_q, wstrb_q);
+                    end
+                    REG_V_BASE_H: begin
+                        v_base_q[63:32] <= apply_wstrb32(v_base_q[63:32], wdata_q, wstrb_q);
+                    end
+                    REG_O_BASE_L: begin
+                        o_base_q[31:0] <= apply_wstrb32(o_base_q[31:0], wdata_q, wstrb_q);
+                    end
+                    REG_O_BASE_H: begin
+                        o_base_q[63:32] <= apply_wstrb32(o_base_q[63:32], wdata_q, wstrb_q);
+                    end
+                    REG_STRIDE_BYTES: begin
+                        stride_bytes_q <= apply_wstrb32(stride_bytes_q, wdata_q, wstrb_q);
+                    end
+                    REG_NEG_LARGE: begin
+                        neg_large_q <= apply_wstrb32(neg_large_q, wdata_q, wstrb_q);
+                    end
+                    REG_SCALE: begin
+                        scale_q <= apply_wstrb32(scale_q, wdata_q, wstrb_q);
+                    end
+                    default: begin
+                    end
+                endcase
+
+                awaddr_valid_q <= 1'b0;
+                wdata_valid_q  <= 1'b0;
+                s_axil_bvalid  <= 1'b1;
+            end else if (s_axil_bvalid && s_axil_bready) begin
+                s_axil_bvalid <= 1'b0;
+            end
+
+            if (s_axil_arvalid && s_axil_arready) begin
+                raddr_q       <= s_axil_araddr;
+                s_axil_rvalid <= 1'b1;
+            end else if (s_axil_rvalid && s_axil_rready) begin
+                s_axil_rvalid <= 1'b0;
+            end
+        end
+    end
+
+endmodule
