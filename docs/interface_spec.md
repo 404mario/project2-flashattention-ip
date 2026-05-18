@@ -61,6 +61,22 @@ module flash_core #(
 | `o_data[D_MODEL]` | output | Signed Q8.8 output row payload. |
 | `o_ready` | input | Consumer accepts the row. |
 
+### Handshake Stability Rules
+
+- `start` is sampled only while `busy=0`; a new `start` pulse during a run is
+  ignored.
+- Producers may delay `q_req_ready`, `q_data_valid`, `kv_req_ready`, and
+  `kv_data_valid` by any number of cycles.
+- While `q_data_valid=1`, `q_data` must stay stable until `q_data_ready=1`.
+- While `kv_data_valid=1`, `k_tile` and `v_tile` must stay stable until
+  `kv_data_ready=1`.
+- While `o_valid=1` and `o_ready=0`, `o_row` and all `o_data` lanes remain
+  stable.
+- `done` is a one-cycle pulse after the last output row is accepted.
+
+See `docs/core_integration_contract.md` for the frozen Member B integration
+contract and fixed-point behavior that the software model should mirror.
+
 ## Member B Internal Compute Modules
 
 ### `dot_product_engine`
@@ -92,7 +108,9 @@ output logic signed [SCORE_W-1:0] score_out
 
 ### `online_softmax_engine`
 
-Updates one online softmax state. Weights are Q0.8 by default.
+Updates one online softmax state. Weights are Q0.8 by default. Negative
+score deltas use a 64-entry exp LUT with 1/8-step addressing; deltas beyond the
+covered range return zero weight.
 
 ```systemverilog
 input  logic score_valid

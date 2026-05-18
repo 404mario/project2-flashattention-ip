@@ -1,18 +1,17 @@
 `timescale 1ns/1ps
 
-module tb_flash_core_matrix16_bitexact;
-    localparam int S_LEN       = 16;
-    localparam int D_MODEL     = 16;
-    localparam int BK          = 4;
+module tb_flash_core_fullsize_smoke;
+    localparam int S_LEN       = 256;
+    localparam int D_MODEL     = 64;
+    localparam int BK          = 16;
     localparam int DATA_W      = 16;
     localparam int ACC_W       = 48;
     localparam int FRAC_W      = 8;
-    localparam int WEIGHT_FRAC = 8;
-    localparam int WEIGHT_ONE  = 1 << WEIGHT_FRAC;
-    localparam int SCALE_Q8_8  = 256;
+    localparam int SCALE_Q8_8  = 32;
     localparam int ROW_W       = $clog2(S_LEN);
     localparam int LEN_W       = $clog2(BK + 1);
     localparam int TILES_PER_ROW = S_LEN / BK;
+    localparam int TIMEOUT_CYCLES = 5000000;
 
     logic clk;
     logic rst_n;
@@ -47,6 +46,8 @@ module tb_flash_core_matrix16_bitexact;
 
     int d;
     int b;
+    int cycle_count;
+    int start_cycle;
     int q_requests;
     int kv_requests;
     int output_rows;
@@ -92,86 +93,56 @@ module tb_flash_core_matrix16_bitexact;
 
     function automatic longint signed q_value(input int row, input int col);
         begin
-            q_value = (row * 2 + col - 11) <<< 2;
+            q_value = ((((row + col * 3) % 9) - 4) <<< 1);
         end
     endfunction
 
     function automatic longint signed k_value(input int key_row, input int col);
         begin
-            k_value = (key_row - col + 7) <<< 3;
+            k_value = ((((key_row * 2 + col) % 11) - 5) <<< 1);
         end
     endfunction
 
     function automatic longint signed v_value(input int key_row, input int col);
         begin
-            v_value = (key_row + col - 3) <<< 2;
+            v_value = ((((key_row * 5 + col * 7) % 17) - 8) <<< 2);
         end
     endfunction
 
-    `include "flash_core_ref_exp_lut.svh"
-
-    function automatic logic signed [DATA_W-1:0] saturate_to_data(input longint signed value);
+    task automatic drive_q_row(input int row);
         begin
-            if (value > 32767) begin
-                saturate_to_data = 16'sh7fff;
-            end else if (value < -32768) begin
-                saturate_to_data = 16'sh8000;
-            end else begin
-                saturate_to_data = value[DATA_W-1:0];
+            for (d = 0; d < D_MODEL; d = d + 1) begin
+                q_data[d] <= q_value(row, d);
             end
         end
-    endfunction
+    endtask
 
-    function automatic longint signed scaled_score(input int row, input int key);
-        longint signed dot;
+    task automatic drive_kv_tile(input int start_row);
         begin
-            dot = 0;
-            for (int col = 0; col < D_MODEL; col = col + 1) begin
-                dot += q_value(row, col) * k_value(key, col);
-            end
-            scaled_score = ((dot >>> FRAC_W) * SCALE_Q8_8) >>> FRAC_W;
-        end
-    endfunction
-
-    function automatic logic signed [DATA_W-1:0] expected_o(input int row, input int out_col);
-        longint signed m;
-        longint unsigned l;
-        longint signed acc;
-        longint signed score;
-        longint signed old_scale;
-        longint signed new_weight;
-        begin
-            m = 0;
-            l = 0;
-            acc = 0;
-
-            for (int key = 0; key < S_LEN; key = key + 1) begin
-                if (key <= row) begin
-                    score = scaled_score(row, key);
-
-                    if (l == 0) begin
-                        old_scale = 0;
-                        new_weight = WEIGHT_ONE;
-                        m = score;
-                        l = WEIGHT_ONE;
-                    end else if (score > m) begin
-                        old_scale = exp_approx_weight(m - score);
-                        new_weight = WEIGHT_ONE;
-                        l = ((l * old_scale) >>> WEIGHT_FRAC) + new_weight;
-                        m = score;
-                    end else begin
-                        old_scale = WEIGHT_ONE;
-                        new_weight = exp_approx_weight(score - m);
-                        l = l + new_weight;
-                    end
-
-                    acc = ((acc * old_scale) >>> WEIGHT_FRAC) + (new_weight * v_value(key, out_col));
+            for (b = 0; b < BK; b = b + 1) begin
+                for (d = 0; d < D_MODEL; d = d + 1) begin
+                    k_tile[b][d] <= k_value(start_row + b, d);
+                    v_tile[b][d] <= v_value(start_row + b, d);
                 end
             end
-
-            expected_o = (l == 0) ? '0 : saturate_to_data(acc / longint'(l));
         end
-    endfunction
+    endtask
+
+    task automatic check_no_x_output(input int row);
+        begin
+            if (o_row !== row[ROW_W-1:0]) begin
+                $display("FAIL fullsize O row got=%0d expected=%0d", o_row, row);
+                $fatal(1);
+            end
+
+            for (d = 0; d < D_MODEL; d = d + 1) begin
+                if ((^o_data[d]) === 1'bx) begin
+                    $display("FAIL fullsize O[%0d][%0d] is X/Z", row, d);
+                    $fatal(1);
+                end
+            end
+        end
+    endtask
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -180,6 +151,7 @@ module tb_flash_core_matrix16_bitexact;
             q_requests    <= 0;
             kv_requests   <= 0;
             output_rows   <= 0;
+            cycle_count   <= 0;
 
             for (d = 0; d < D_MODEL; d = d + 1) begin
                 q_data[d] <= '0;
@@ -191,18 +163,16 @@ module tb_flash_core_matrix16_bitexact;
                 end
             end
         end else begin
-            q_data_valid  <= 1'b0;
+            cycle_count <= cycle_count + 1;
+            q_data_valid <= 1'b0;
             kv_data_valid <= 1'b0;
 
             if (q_req_valid && q_req_ready) begin
                 if (q_req_row !== q_requests[ROW_W-1:0]) begin
-                    $display("FAIL Q request got row=%0d expected=%0d", q_req_row, q_requests);
+                    $display("FAIL fullsize Q request got row=%0d expected=%0d", q_req_row, q_requests);
                     $fatal(1);
                 end
-
-                for (d = 0; d < D_MODEL; d = d + 1) begin
-                    q_data[d] <= q_value(q_requests, d);
-                end
+                drive_q_row(q_requests);
                 q_data_valid <= 1'b1;
                 q_requests <= q_requests + 1;
             end
@@ -210,51 +180,31 @@ module tb_flash_core_matrix16_bitexact;
             if (kv_req_valid && kv_req_ready) begin
                 int expected_tile;
                 int expected_start;
+
                 expected_tile = kv_requests % TILES_PER_ROW;
                 expected_start = expected_tile * BK;
-
-                if (kv_req_start !== expected_start[ROW_W-1:0] || kv_req_len !== BK[LEN_W-1:0]) begin
-                    $display("FAIL K/V request index=%0d got start=%0d len=%0d expected start=%0d len=%0d",
+                if ((kv_req_start !== expected_start[ROW_W-1:0]) ||
+                    (kv_req_len !== BK[LEN_W-1:0])) begin
+                    $display("FAIL fullsize K/V request index=%0d got start=%0d len=%0d expected start=%0d len=%0d",
                              kv_requests, kv_req_start, kv_req_len, expected_start, BK);
                     $fatal(1);
                 end
-
-                for (b = 0; b < BK; b = b + 1) begin
-                    for (d = 0; d < D_MODEL; d = d + 1) begin
-                        k_tile[b][d] <= k_value(expected_start + b, d);
-                        v_tile[b][d] <= v_value(expected_start + b, d);
-                    end
-                end
+                drive_kv_tile(expected_start);
                 kv_data_valid <= 1'b1;
                 kv_requests <= kv_requests + 1;
             end
 
             if (o_valid && o_ready) begin
-                if (o_row !== output_rows[ROW_W-1:0]) begin
-                    $display("FAIL O row got=%0d expected=%0d", o_row, output_rows);
-                    $fatal(1);
+                check_no_x_output(output_rows);
+                if ((output_rows % 32) == 0) begin
+                    $display("PASS fullsize row=%0d o0=%0d", o_row, o_data[0]);
                 end
-
-                for (d = 0; d < D_MODEL; d = d + 1) begin
-                    if (o_data[d] !== expected_o(output_rows, d)) begin
-                        $display("FAIL O[%0d][%0d] got=%0d hex=%04h expected=%0d hex=%04h",
-                                 o_row, d, o_data[d], o_data[d],
-                                 expected_o(output_rows, d), expected_o(output_rows, d));
-                        $fatal(1);
-                    end
-                end
-
-                $display("PASS matrix16 full-core row=%0d bit-exact o0=%0d hex=%04h",
-                         o_row, o_data[0], o_data[0]);
                 output_rows <= output_rows + 1;
             end
         end
     end
 
     initial begin
-        $dumpfile("tb_flash_core_matrix16_bitexact.vcd");
-        $dumpvars(0, tb_flash_core_matrix16_bitexact);
-
         clk          = 1'b0;
         rst_n        = 1'b0;
         start        = 1'b0;
@@ -264,11 +214,13 @@ module tb_flash_core_matrix16_bitexact;
         q_req_ready  = 1'b1;
         kv_req_ready = 1'b1;
         o_ready      = 1'b1;
+        start_cycle  = 0;
 
         repeat (4) @(posedge clk);
         rst_n = 1'b1;
 
         @(negedge clk);
+        start_cycle = cycle_count;
         start = 1'b1;
         @(negedge clk);
         start = 1'b0;
@@ -278,8 +230,8 @@ module tb_flash_core_matrix16_bitexact;
                 wait (done);
             end
             begin
-                repeat (6000) @(posedge clk);
-                $display("FAIL timeout waiting for matrix16 core done");
+                repeat (TIMEOUT_CYCLES) @(posedge clk);
+                $display("FAIL timeout waiting for fullsize core done");
                 $fatal(1);
             end
         join_any
@@ -287,23 +239,25 @@ module tb_flash_core_matrix16_bitexact;
 
         @(posedge clk);
         if (error) begin
-            $display("FAIL core error asserted");
+            $display("FAIL fullsize core error asserted");
             $fatal(1);
         end
         if (q_requests != S_LEN) begin
-            $display("FAIL q_requests=%0d expected=%0d", q_requests, S_LEN);
+            $display("FAIL fullsize q_requests=%0d expected=%0d", q_requests, S_LEN);
             $fatal(1);
         end
         if (kv_requests != S_LEN * TILES_PER_ROW) begin
-            $display("FAIL kv_requests=%0d expected=%0d", kv_requests, S_LEN * TILES_PER_ROW);
+            $display("FAIL fullsize kv_requests=%0d expected=%0d", kv_requests, S_LEN * TILES_PER_ROW);
             $fatal(1);
         end
         if (output_rows != S_LEN) begin
-            $display("FAIL output_rows=%0d expected=%0d", output_rows, S_LEN);
+            $display("FAIL fullsize output_rows=%0d expected=%0d", output_rows, S_LEN);
             $fatal(1);
         end
 
-        $display("tb_flash_core_matrix16_bitexact PASS");
+        $display("tb_flash_core_fullsize_smoke PASS cycles=%0d q_requests=%0d kv_requests=%0d output_rows=%0d",
+                 cycle_count - start_cycle, q_requests, kv_requests, output_rows);
         $finish;
     end
 endmodule
+
