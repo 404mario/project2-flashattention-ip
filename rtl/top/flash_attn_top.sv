@@ -1,0 +1,381 @@
+`timescale 1ns/1ps
+
+module flash_attn_top #(
+    parameter int S_LEN      = 256,
+    parameter int D_MODEL    = 64,
+    parameter int BK         = 16,
+    parameter int DATA_W     = 16,
+    parameter int FRAC_W     = 8,
+    parameter int ACC_W      = 48,
+    parameter int ADDR_W     = 64,
+    parameter int AXI_DATA_W = 64
+) (
+    input  logic clk,
+    input  logic rst_n,
+
+    input  logic [31:0] s_axil_awaddr,
+    input  logic        s_axil_awvalid,
+    output logic        s_axil_awready,
+
+    input  logic [31:0] s_axil_wdata,
+    input  logic [3:0]  s_axil_wstrb,
+    input  logic        s_axil_wvalid,
+    output logic        s_axil_wready,
+
+    output logic [1:0]  s_axil_bresp,
+    output logic        s_axil_bvalid,
+    input  logic        s_axil_bready,
+
+    input  logic [31:0] s_axil_araddr,
+    input  logic        s_axil_arvalid,
+    output logic        s_axil_arready,
+
+    output logic [31:0] s_axil_rdata,
+    output logic [1:0]  s_axil_rresp,
+    output logic        s_axil_rvalid,
+    input  logic        s_axil_rready,
+
+    output logic [ADDR_W-1:0] m_axi_araddr,
+    output logic [7:0]        m_axi_arlen,
+    output logic [2:0]        m_axi_arsize,
+    output logic [1:0]        m_axi_arburst,
+    output logic              m_axi_arvalid,
+    input  logic              m_axi_arready,
+
+    input  logic [AXI_DATA_W-1:0] m_axi_rdata,
+    input  logic [1:0]            m_axi_rresp,
+    input  logic                  m_axi_rlast,
+    input  logic                  m_axi_rvalid,
+    output logic                  m_axi_rready,
+
+    output logic [ADDR_W-1:0] m_axi_awaddr,
+    output logic [7:0]        m_axi_awlen,
+    output logic [2:0]        m_axi_awsize,
+    output logic [1:0]        m_axi_awburst,
+    output logic              m_axi_awvalid,
+    input  logic              m_axi_awready,
+
+    output logic [AXI_DATA_W-1:0]   m_axi_wdata,
+    output logic [AXI_DATA_W/8-1:0] m_axi_wstrb,
+    output logic                    m_axi_wlast,
+    output logic                    m_axi_wvalid,
+    input  logic                    m_axi_wready,
+
+    input  logic [1:0] m_axi_bresp,
+    input  logic       m_axi_bvalid,
+    output logic       m_axi_bready,
+
+    output logic irq
+);
+
+    logic start_pulse;
+    logic soft_reset;
+    logic irq_en;
+    logic causal_en;
+    logic [63:0] q_base;
+    logic [63:0] k_base;
+    logic [63:0] v_base;
+    logic [63:0] o_base;
+    logic [31:0] stride_bytes;
+    logic signed [31:0] neg_large;
+    logic signed [31:0] scale;
+    logic [31:0] cycle_count_q;
+    logic irq_int;
+
+    logic core_busy;
+    logic core_done;
+    logic core_error;
+
+    logic dma_busy;
+    logic dma_done;
+    logic dma_error;
+
+    logic q_req_valid;
+    logic [$clog2(S_LEN)-1:0] q_req_row;
+    logic q_req_ready;
+    logic q_data_valid;
+    logic signed [DATA_W-1:0] q_data [0:D_MODEL-1];
+    logic q_data_ready;
+
+    logic kv_req_valid;
+    logic [$clog2(S_LEN)-1:0] kv_req_start;
+    logic [$clog2(BK+1)-1:0]  kv_req_len;
+    logic kv_req_ready;
+    logic kv_data_valid;
+    logic signed [DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1];
+    logic signed [DATA_W-1:0] v_tile [0:BK-1][0:D_MODEL-1];
+    logic kv_data_ready;
+
+    logic o_valid;
+    logic [$clog2(S_LEN)-1:0] o_row;
+    logic signed [DATA_W-1:0] o_data [0:D_MODEL-1];
+    logic o_ready;
+
+    logic rd_req_valid;
+    logic [ADDR_W-1:0] rd_req_addr;
+    logic [31:0]       rd_req_bytes;
+    logic rd_req_ready;
+    logic rd_data_valid;
+    logic [AXI_DATA_W-1:0] rd_data;
+    logic rd_last;
+    logic rd_data_ready;
+    logic rd_busy;
+    logic rd_done;
+    logic rd_error;
+
+    logic wr_req_valid;
+    logic [ADDR_W-1:0] wr_req_addr;
+    logic [31:0]       wr_req_bytes;
+    logic wr_req_ready;
+    logic wr_data_valid;
+    logic [AXI_DATA_W-1:0] wr_data;
+    logic wr_last;
+    logic wr_data_ready;
+    logic wr_busy;
+    logic wr_done;
+    logic wr_error;
+
+    logic work_rst_n;
+    logic run_active_q;
+    logic core_done_seen_q;
+    logic overall_busy;
+    logic overall_done_pulse;
+    logic overall_error;
+
+    assign work_rst_n = rst_n && !soft_reset;
+    assign irq        = irq_int;
+
+    assign overall_busy       = run_active_q || core_busy || dma_busy || rd_busy || wr_busy;
+    assign overall_done_pulse = run_active_q && core_done_seen_q && !dma_busy && !rd_busy && !wr_busy;
+    assign overall_error      = core_error || dma_error || rd_error || wr_error;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            run_active_q     <= 1'b0;
+            core_done_seen_q <= 1'b0;
+            cycle_count_q    <= 32'd0;
+        end else if (soft_reset) begin
+            run_active_q     <= 1'b0;
+            core_done_seen_q <= 1'b0;
+            cycle_count_q    <= 32'd0;
+        end else begin
+            if (start_pulse) begin
+                run_active_q     <= 1'b1;
+                core_done_seen_q <= 1'b0;
+                cycle_count_q    <= 32'd0;
+            end else begin
+                if (overall_done_pulse) begin
+                    run_active_q <= 1'b0;
+                end
+                if (run_active_q && !overall_done_pulse) begin
+                    cycle_count_q <= cycle_count_q + 1'b1;
+                end
+            end
+
+            if (core_done) begin
+                core_done_seen_q <= 1'b1;
+            end
+            if (overall_done_pulse) begin
+                core_done_seen_q <= 1'b0;
+            end
+        end
+    end
+
+    axi_lite_regs #(
+        .ADDR_W(32),
+        .DATA_W(32),
+        .D_MODEL(D_MODEL)
+    ) u_axi_lite_regs (
+        .clk(clk),
+        .rst_n(rst_n),
+        .s_axil_awaddr(s_axil_awaddr),
+        .s_axil_awvalid(s_axil_awvalid),
+        .s_axil_awready(s_axil_awready),
+        .s_axil_wdata(s_axil_wdata),
+        .s_axil_wstrb(s_axil_wstrb),
+        .s_axil_wvalid(s_axil_wvalid),
+        .s_axil_wready(s_axil_wready),
+        .s_axil_bresp(s_axil_bresp),
+        .s_axil_bvalid(s_axil_bvalid),
+        .s_axil_bready(s_axil_bready),
+        .s_axil_araddr(s_axil_araddr),
+        .s_axil_arvalid(s_axil_arvalid),
+        .s_axil_arready(s_axil_arready),
+        .s_axil_rdata(s_axil_rdata),
+        .s_axil_rresp(s_axil_rresp),
+        .s_axil_rvalid(s_axil_rvalid),
+        .s_axil_rready(s_axil_rready),
+        .start_pulse(start_pulse),
+        .soft_reset(soft_reset),
+        .irq_en(irq_en),
+        .causal_en(causal_en),
+        .q_base(q_base),
+        .k_base(k_base),
+        .v_base(v_base),
+        .o_base(o_base),
+        .stride_bytes(stride_bytes),
+        .neg_large(neg_large),
+        .scale(scale),
+        .busy(overall_busy),
+        .done(overall_done_pulse),
+        .error(overall_error),
+        .cycles(cycle_count_q),
+        .irq(irq_int)
+    );
+
+    flash_core #(
+        .S_LEN(S_LEN),
+        .D_MODEL(D_MODEL),
+        .BK(BK),
+        .DATA_W(DATA_W),
+        .ACC_W(ACC_W),
+        .FRAC_W(FRAC_W)
+    ) u_flash_core (
+        .clk(clk),
+        .rst_n(work_rst_n),
+        .start(start_pulse),
+        .busy(core_busy),
+        .done(core_done),
+        .error(core_error),
+        .causal_en(causal_en),
+        .neg_large(neg_large),
+        .scale(scale),
+        .q_req_valid(q_req_valid),
+        .q_req_row(q_req_row),
+        .q_req_ready(q_req_ready),
+        .q_data_valid(q_data_valid),
+        .q_data(q_data),
+        .q_data_ready(q_data_ready),
+        .kv_req_valid(kv_req_valid),
+        .kv_req_start(kv_req_start),
+        .kv_req_len(kv_req_len),
+        .kv_req_ready(kv_req_ready),
+        .kv_data_valid(kv_data_valid),
+        .k_tile(k_tile),
+        .v_tile(v_tile),
+        .kv_data_ready(kv_data_ready),
+        .o_valid(o_valid),
+        .o_row(o_row),
+        .o_data(o_data),
+        .o_ready(o_ready)
+    );
+
+    dma_controller #(
+        .S_LEN(S_LEN),
+        .ADDR_W(ADDR_W),
+        .DATA_W(DATA_W),
+        .D_MODEL(D_MODEL),
+        .BK(BK),
+        .AXI_DATA_W(AXI_DATA_W)
+    ) u_dma_controller (
+        .clk(clk),
+        .rst_n(work_rst_n),
+        .start(start_pulse),
+        .busy(dma_busy),
+        .done(dma_done),
+        .error(dma_error),
+        .q_base(q_base),
+        .k_base(k_base),
+        .v_base(v_base),
+        .o_base(o_base),
+        .stride_bytes(stride_bytes),
+        .q_req_valid(q_req_valid),
+        .q_req_row(q_req_row),
+        .q_req_ready(q_req_ready),
+        .q_data_valid(q_data_valid),
+        .q_data(q_data),
+        .q_data_ready(q_data_ready),
+        .kv_req_valid(kv_req_valid),
+        .kv_req_start(kv_req_start),
+        .kv_req_len(kv_req_len),
+        .kv_req_ready(kv_req_ready),
+        .kv_data_valid(kv_data_valid),
+        .k_tile(k_tile),
+        .v_tile(v_tile),
+        .kv_data_ready(kv_data_ready),
+        .o_valid(o_valid),
+        .o_row(o_row),
+        .o_data(o_data),
+        .o_ready(o_ready),
+        .rd_req_valid(rd_req_valid),
+        .rd_req_addr(rd_req_addr),
+        .rd_req_bytes(rd_req_bytes),
+        .rd_req_ready(rd_req_ready),
+        .rd_data_valid(rd_data_valid),
+        .rd_data(rd_data),
+        .rd_last(rd_last),
+        .rd_data_ready(rd_data_ready),
+        .wr_req_valid(wr_req_valid),
+        .wr_req_addr(wr_req_addr),
+        .wr_req_bytes(wr_req_bytes),
+        .wr_req_ready(wr_req_ready),
+        .wr_data_valid(wr_data_valid),
+        .wr_data(wr_data),
+        .wr_last(wr_last),
+        .wr_data_ready(wr_data_ready)
+    );
+
+    axi_master_read #(
+        .ADDR_W(ADDR_W),
+        .AXI_DATA_W(AXI_DATA_W)
+    ) u_axi_master_read (
+        .clk(clk),
+        .rst_n(work_rst_n),
+        .req_valid(rd_req_valid),
+        .req_addr(rd_req_addr),
+        .req_bytes(rd_req_bytes),
+        .req_ready(rd_req_ready),
+        .data_valid(rd_data_valid),
+        .data(rd_data),
+        .data_last(rd_last),
+        .data_ready(rd_data_ready),
+        .m_axi_araddr(m_axi_araddr),
+        .m_axi_arlen(m_axi_arlen),
+        .m_axi_arsize(m_axi_arsize),
+        .m_axi_arburst(m_axi_arburst),
+        .m_axi_arvalid(m_axi_arvalid),
+        .m_axi_arready(m_axi_arready),
+        .m_axi_rdata(m_axi_rdata),
+        .m_axi_rresp(m_axi_rresp),
+        .m_axi_rlast(m_axi_rlast),
+        .m_axi_rvalid(m_axi_rvalid),
+        .m_axi_rready(m_axi_rready),
+        .busy(rd_busy),
+        .done(rd_done),
+        .error(rd_error)
+    );
+
+    axi_master_write #(
+        .ADDR_W(ADDR_W),
+        .AXI_DATA_W(AXI_DATA_W)
+    ) u_axi_master_write (
+        .clk(clk),
+        .rst_n(work_rst_n),
+        .req_valid(wr_req_valid),
+        .req_addr(wr_req_addr),
+        .req_bytes(wr_req_bytes),
+        .req_ready(wr_req_ready),
+        .data_valid(wr_data_valid),
+        .data(wr_data),
+        .data_last(wr_last),
+        .data_ready(wr_data_ready),
+        .m_axi_awaddr(m_axi_awaddr),
+        .m_axi_awlen(m_axi_awlen),
+        .m_axi_awsize(m_axi_awsize),
+        .m_axi_awburst(m_axi_awburst),
+        .m_axi_awvalid(m_axi_awvalid),
+        .m_axi_awready(m_axi_awready),
+        .m_axi_wdata(m_axi_wdata),
+        .m_axi_wstrb(m_axi_wstrb),
+        .m_axi_wlast(m_axi_wlast),
+        .m_axi_wvalid(m_axi_wvalid),
+        .m_axi_wready(m_axi_wready),
+        .m_axi_bresp(m_axi_bresp),
+        .m_axi_bvalid(m_axi_bvalid),
+        .m_axi_bready(m_axi_bready),
+        .busy(wr_busy),
+        .done(wr_done),
+        .error(wr_error)
+    );
+
+endmodule
