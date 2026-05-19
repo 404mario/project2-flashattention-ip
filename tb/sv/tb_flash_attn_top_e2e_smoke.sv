@@ -14,6 +14,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int BQ             = 16;
     parameter int USE_DOT_TREE    = 1;
     parameter int USE_CAUSAL_SKIP = 1;
+    parameter int SOFTMAX_FRAC    = 16;
     parameter int MAX_CYCLES      = 0;
     parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
@@ -119,7 +120,15 @@ module tb_flash_attn_top_e2e_smoke;
     int row;
     int col;
     int changed_count;
+    int use_vector_files;
     string out_hex_path;
+    string q_hex_path;
+    string k_hex_path;
+    string v_hex_path;
+
+    logic [15:0] q_vec_mem [0:NUM_ELEMS-1];
+    logic [15:0] k_vec_mem [0:NUM_ELEMS-1];
+    logic [15:0] v_vec_mem [0:NUM_ELEMS-1];
 
     typedef enum logic [1:0] {
         RD_IDLE,
@@ -152,7 +161,8 @@ module tb_flash_attn_top_e2e_smoke;
         .AXI_DATA_W(AXI_DATA_W),
         .BQ(BQ),
         .USE_DOT_TREE(USE_DOT_TREE),
-        .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP)
+        .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
+        .SOFTMAX_FRAC(SOFTMAX_FRAC)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -307,6 +317,36 @@ module tb_flash_attn_top_e2e_smoke;
         end
     endfunction
 
+    function automatic int signed q_data_value(input int in_row, input int in_col);
+        begin
+            if (use_vector_files != 0) begin
+                q_data_value = $signed(q_vec_mem[in_row * D_MODEL + in_col]);
+            end else begin
+                q_data_value = q_value(in_row, in_col);
+            end
+        end
+    endfunction
+
+    function automatic int signed k_data_value(input int key_row, input int in_col);
+        begin
+            if (use_vector_files != 0) begin
+                k_data_value = $signed(k_vec_mem[key_row * D_MODEL + in_col]);
+            end else begin
+                k_data_value = k_value(key_row, in_col);
+            end
+        end
+    endfunction
+
+    function automatic int signed v_data_value(input int key_row, input int in_col);
+        begin
+            if (use_vector_files != 0) begin
+                v_data_value = $signed(v_vec_mem[key_row * D_MODEL + in_col]);
+            end else begin
+                v_data_value = v_value(key_row, in_col);
+            end
+        end
+    endfunction
+
     `include "flash_core_ref_exp_lut.svh"
 
     function automatic logic signed [DATA_W-1:0] saturate_to_data(input longint signed value);
@@ -326,7 +366,7 @@ module tb_flash_attn_top_e2e_smoke;
         begin
             dot = 0;
             for (int c = 0; c < D_MODEL; c = c + 1) begin
-                dot += q_value(in_row, c) * k_value(key, c);
+                dot += q_data_value(in_row, c) * k_data_value(key, c);
             end
             scaled_score = ((dot >>> FRAC_W) * SCALE_Q8_8) >>> FRAC_W;
         end
@@ -365,7 +405,7 @@ module tb_flash_attn_top_e2e_smoke;
                     end
 
                     acc = ((acc * old_scale) >>> WEIGHT_FRAC) +
-                          (new_weight * v_value(key, out_col));
+                          (new_weight * v_data_value(key, out_col));
                 end
             end
 
@@ -392,9 +432,9 @@ module tb_flash_attn_top_e2e_smoke;
             r = idx / D_MODEL;
             c = idx % D_MODEL;
             case (source)
-                0: source_value = q_value(r, c) & 16'hffff;
-                1: source_value = k_value(r, c) & 16'hffff;
-                2: source_value = v_value(r, c) & 16'hffff;
+                0: source_value = q_data_value(r, c) & 16'hffff;
+                1: source_value = k_data_value(r, c) & 16'hffff;
+                2: source_value = v_data_value(r, c) & 16'hffff;
                 default: source_value = 16'h0000;
             endcase
         end
@@ -712,7 +752,7 @@ module tb_flash_attn_top_e2e_smoke;
                             $fatal(1);
                         end
                     end else if (r == 0) begin
-                        exp = v_value(0, c);
+                        exp = v_data_value(0, c);
                         if (got !== exp) begin
                             $display("FAIL TOP causal row0 O[0][%0d] got=%0d expected V[0][%0d]=%0d",
                                      c, got, c, exp);
@@ -747,13 +787,34 @@ module tb_flash_attn_top_e2e_smoke;
     endtask
 
     initial begin
+        use_vector_files = 0;
         out_hex_path = "sim_build/tb_flash_attn_top_e2e_output.hex";
         if (!$value$plusargs("OUT_HEX=%s", out_hex_path)) begin
             out_hex_path = "sim_build/tb_flash_attn_top_e2e_output.hex";
         end
+        if (!$value$plusargs("USE_VECTOR_FILES=%d", use_vector_files)) begin
+            use_vector_files = 0;
+        end
+        if (use_vector_files != 0) begin
+            if (!$value$plusargs("Q_HEX=%s", q_hex_path)) begin
+                $display("FAIL +USE_VECTOR_FILES=1 requires +Q_HEX=<path>");
+                $fatal(1);
+            end
+            if (!$value$plusargs("K_HEX=%s", k_hex_path)) begin
+                $display("FAIL +USE_VECTOR_FILES=1 requires +K_HEX=<path>");
+                $fatal(1);
+            end
+            if (!$value$plusargs("V_HEX=%s", v_hex_path)) begin
+                $display("FAIL +USE_VECTOR_FILES=1 requires +V_HEX=<path>");
+                $fatal(1);
+            end
+            $readmemh(q_hex_path, q_vec_mem);
+            $readmemh(k_hex_path, k_vec_mem);
+            $readmemh(v_hex_path, v_vec_mem);
+        end
 
         if (VERBOSE != 0) begin
-            $display("INFO top e2e initial entered");
+            $display("INFO top e2e initial entered vector_files=%0d", use_vector_files);
             $fflush();
         end
         clk = 1'b0;
