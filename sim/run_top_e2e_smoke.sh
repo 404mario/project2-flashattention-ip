@@ -56,6 +56,16 @@ check_output() {
         "$@"
 }
 
+# --- AXI-Lite control/status register checks ---
+REG_CTRL_OUT="$BUILD/tb_axi_lite_regs_ctrl.vvp"
+iverilog -g2012 -Wall \
+    -s tb_axi_lite_regs_ctrl \
+    -o "$REG_CTRL_OUT" \
+    "$ROOT/rtl/axi/axi_lite_regs.sv" \
+    "$ROOT/tb/sv/tb_axi_lite_regs_ctrl.sv"
+
+run_vvp "$REG_CTRL_OUT"
+
 # --- Small smoke (S=8, D=8) ---
 SMALL_OUT="$BUILD/tb_flash_attn_top_e2e_small.vvp"
 iverilog -g2012 -Wall \
