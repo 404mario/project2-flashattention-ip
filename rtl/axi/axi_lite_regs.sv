@@ -48,6 +48,8 @@ module axi_lite_regs #(
     input  logic                 done,
     input  logic                 error,
     input  logic [31:0]          cycles,
+    input  logic [63:0]          rd_bytes,
+    input  logic [63:0]          wr_bytes,
 
     output logic                 irq
 );
@@ -67,6 +69,10 @@ module axi_lite_regs #(
     localparam logic [ADDR_W-1:0] REG_NEG_LARGE    = 'h38;
     localparam logic [ADDR_W-1:0] REG_SCALE        = 'h3C;
     localparam logic [ADDR_W-1:0] REG_CYCLES       = 'h40;
+    localparam logic [ADDR_W-1:0] REG_RD_BYTES_L   = 'h44;
+    localparam logic [ADDR_W-1:0] REG_RD_BYTES_H   = 'h48;
+    localparam logic [ADDR_W-1:0] REG_WR_BYTES_L   = 'h4C;
+    localparam logic [ADDR_W-1:0] REG_WR_BYTES_H   = 'h50;
 
     localparam logic signed [31:0] DEFAULT_NEG_LARGE = -32'sd32768;
     localparam logic signed [31:0] DEFAULT_SCALE     =  32'sd32; // 0.125 in Q8.8
@@ -128,7 +134,7 @@ module axi_lite_regs #(
     assign scale       = scale_q;
     assign irq         = irq_en_q && done_sticky_q;
 
-    always_comb begin
+    always @* begin
         s_axil_rdata = '0;
         unique case (raddr_q)
             REG_CTRL: begin
@@ -154,6 +160,10 @@ module axi_lite_regs #(
             REG_NEG_LARGE:     s_axil_rdata = neg_large_q;
             REG_SCALE:         s_axil_rdata = scale_q;
             REG_CYCLES:        s_axil_rdata = cycles;
+            REG_RD_BYTES_L:    s_axil_rdata = rd_bytes[31:0];
+            REG_RD_BYTES_H:    s_axil_rdata = rd_bytes[63:32];
+            REG_WR_BYTES_L:    s_axil_rdata = wr_bytes[31:0];
+            REG_WR_BYTES_H:    s_axil_rdata = wr_bytes[63:32];
             default:           s_axil_rdata = '0;
         endcase
     end
@@ -208,28 +218,28 @@ module axi_lite_regs #(
             if (awaddr_valid_q && wdata_valid_q && !s_axil_bvalid) begin
                 unique case (awaddr_q)
                     REG_CTRL: begin
-                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[0]) begin
+                        if ((apply_wstrb32(32'd0, wdata_q, wstrb_q) & 32'h0000_0001) != 32'd0) begin
                             start_pulse   <= 1'b1;
                             done_sticky_q <= 1'b0;
                             error_sticky_q <= 1'b0;
                         end
-                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[1]) begin
+                        if ((apply_wstrb32(32'd0, wdata_q, wstrb_q) & 32'h0000_0002) != 32'd0) begin
                             soft_reset    <= 1'b1;
                             done_sticky_q <= 1'b0;
                             error_sticky_q <= 1'b0;
                         end
-                        irq_en_q <= apply_wstrb32({29'd0, irq_en_q, 2'd0}, wdata_q, wstrb_q)[2];
+                        irq_en_q <= ((apply_wstrb32({29'd0, irq_en_q, 2'd0}, wdata_q, wstrb_q) & 32'h0000_0004) != 32'd0);
                     end
                     REG_STATUS: begin
-                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[1]) begin
+                        if ((apply_wstrb32(32'd0, wdata_q, wstrb_q) & 32'h0000_0002) != 32'd0) begin
                             done_sticky_q <= 1'b0;
                         end
-                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[2]) begin
+                        if ((apply_wstrb32(32'd0, wdata_q, wstrb_q) & 32'h0000_0004) != 32'd0) begin
                             error_sticky_q <= 1'b0;
                         end
                     end
                     REG_CFG: begin
-                        causal_en_q <= apply_wstrb32({31'd0, causal_en_q}, wdata_q, wstrb_q)[0];
+                        causal_en_q <= ((apply_wstrb32({31'd0, causal_en_q}, wdata_q, wstrb_q) & 32'h0000_0001) != 32'd0);
                     end
                     REG_Q_BASE_L: begin
                         q_base_q[31:0] <= apply_wstrb32(q_base_q[31:0], wdata_q, wstrb_q);

@@ -1,6 +1,13 @@
 # model_fp32.py
+import sys
+
 import numpy as np
 import config as cfg
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 
 def standard_attention_fp32(Q, K, V):
     """

@@ -8,7 +8,10 @@ module flash_attn_top #(
     parameter int FRAC_W     = 8,
     parameter int ACC_W      = 48,
     parameter int ADDR_W     = 64,
-    parameter int AXI_DATA_W = 64
+    parameter int AXI_DATA_W = 64,
+    parameter int BQ         = 16,
+    parameter int USE_DOT_TREE    = 1,
+    parameter int USE_CAUSAL_SKIP = 1
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -80,6 +83,8 @@ module flash_attn_top #(
     logic signed [31:0] neg_large;
     logic signed [31:0] scale;
     logic [31:0] cycle_count_q;
+    logic [63:0] rd_bytes_count_q;
+    logic [63:0] wr_bytes_count_q;
     logic irq_int;
 
     logic core_busy;
@@ -95,6 +100,7 @@ module flash_attn_top #(
     logic q_req_ready;
     logic q_data_valid;
     logic signed [DATA_W-1:0] q_data [0:D_MODEL-1];
+    logic [D_MODEL*DATA_W-1:0] q_data_flat;
     logic q_data_ready;
 
     logic kv_req_valid;
@@ -104,11 +110,14 @@ module flash_attn_top #(
     logic kv_data_valid;
     logic signed [DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1];
     logic signed [DATA_W-1:0] v_tile [0:BK-1][0:D_MODEL-1];
+    logic [BK*D_MODEL*DATA_W-1:0] k_tile_flat;
+    logic [BK*D_MODEL*DATA_W-1:0] v_tile_flat;
     logic kv_data_ready;
 
     logic o_valid;
     logic [$clog2(S_LEN)-1:0] o_row;
     logic signed [DATA_W-1:0] o_data [0:D_MODEL-1];
+    logic [D_MODEL*DATA_W-1:0] o_data_flat;
     logic o_ready;
 
     logic rd_req_valid;
@@ -141,6 +150,8 @@ module flash_attn_top #(
     logic overall_busy;
     logic overall_done_pulse;
     logic overall_error;
+    integer comb_row;
+    integer comb_col;
 
     assign work_rst_n = rst_n && !soft_reset;
     assign irq        = irq_int;
@@ -149,20 +160,41 @@ module flash_attn_top #(
     assign overall_done_pulse = run_active_q && core_done_seen_q && !dma_busy && !rd_busy && !wr_busy;
     assign overall_error      = core_error || dma_error || rd_error || wr_error;
 
+    always_comb begin
+        for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
+            q_data[comb_col] = q_data_flat[comb_col * DATA_W +: DATA_W];
+            o_data[comb_col] = o_data_flat[comb_col * DATA_W +: DATA_W];
+        end
+        for (comb_row = 0; comb_row < BK; comb_row = comb_row + 1) begin
+            for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
+                k_tile[comb_row][comb_col] =
+                    k_tile_flat[((comb_row * D_MODEL + comb_col) * DATA_W) +: DATA_W];
+                v_tile[comb_row][comb_col] =
+                    v_tile_flat[((comb_row * D_MODEL + comb_col) * DATA_W) +: DATA_W];
+            end
+        end
+    end
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             run_active_q     <= 1'b0;
             core_done_seen_q <= 1'b0;
             cycle_count_q    <= 32'd0;
+            rd_bytes_count_q <= 64'd0;
+            wr_bytes_count_q <= 64'd0;
         end else if (soft_reset) begin
             run_active_q     <= 1'b0;
             core_done_seen_q <= 1'b0;
             cycle_count_q    <= 32'd0;
+            rd_bytes_count_q <= 64'd0;
+            wr_bytes_count_q <= 64'd0;
         end else begin
             if (start_pulse) begin
                 run_active_q     <= 1'b1;
                 core_done_seen_q <= 1'b0;
                 cycle_count_q    <= 32'd0;
+                rd_bytes_count_q <= 64'd0;
+                wr_bytes_count_q <= 64'd0;
             end else begin
                 if (overall_done_pulse) begin
                     run_active_q <= 1'b0;
@@ -170,6 +202,13 @@ module flash_attn_top #(
                 if (run_active_q && !overall_done_pulse) begin
                     cycle_count_q <= cycle_count_q + 1'b1;
                 end
+            end
+
+            if (rd_req_valid && rd_req_ready) begin
+                rd_bytes_count_q <= rd_bytes_count_q + rd_req_bytes;
+            end
+            if (wr_req_valid && wr_req_ready) begin
+                wr_bytes_count_q <= wr_bytes_count_q + wr_req_bytes;
             end
 
             if (core_done) begin
@@ -220,6 +259,8 @@ module flash_attn_top #(
         .done(overall_done_pulse),
         .error(overall_error),
         .cycles(cycle_count_q),
+        .rd_bytes(rd_bytes_count_q),
+        .wr_bytes(wr_bytes_count_q),
         .irq(irq_int)
     );
 
@@ -229,7 +270,10 @@ module flash_attn_top #(
         .BK(BK),
         .DATA_W(DATA_W),
         .ACC_W(ACC_W),
-        .FRAC_W(FRAC_W)
+        .FRAC_W(FRAC_W),
+        .BQ(BQ),
+        .USE_DOT_TREE(USE_DOT_TREE),
+        .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP)
     ) u_flash_core (
         .clk(clk),
         .rst_n(work_rst_n),
@@ -256,7 +300,8 @@ module flash_attn_top #(
         .kv_data_ready(kv_data_ready),
         .o_valid(o_valid),
         .o_row(o_row),
-        .o_data(o_data),
+        .o_data(),
+        .o_data_flat(o_data_flat),
         .o_ready(o_ready)
     );
 
@@ -283,19 +328,23 @@ module flash_attn_top #(
         .q_req_row(q_req_row),
         .q_req_ready(q_req_ready),
         .q_data_valid(q_data_valid),
-        .q_data(q_data),
+        .q_data(),
+        .q_data_flat(q_data_flat),
         .q_data_ready(q_data_ready),
         .kv_req_valid(kv_req_valid),
         .kv_req_start(kv_req_start),
         .kv_req_len(kv_req_len),
         .kv_req_ready(kv_req_ready),
         .kv_data_valid(kv_data_valid),
-        .k_tile(k_tile),
-        .v_tile(v_tile),
+        .k_tile(),
+        .v_tile(),
+        .k_tile_flat(k_tile_flat),
+        .v_tile_flat(v_tile_flat),
         .kv_data_ready(kv_data_ready),
         .o_valid(o_valid),
         .o_row(o_row),
         .o_data(o_data),
+        .o_data_flat(o_data_flat),
         .o_ready(o_ready),
         .rd_req_valid(rd_req_valid),
         .rd_req_addr(rd_req_addr),

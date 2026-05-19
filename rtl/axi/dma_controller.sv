@@ -27,7 +27,8 @@ module dma_controller #(
     output logic q_req_ready,
 
     output logic q_data_valid,
-    output wire signed [DATA_W-1:0] q_data [0:D_MODEL-1],
+    output logic signed [DATA_W-1:0] q_data [0:D_MODEL-1],
+    output logic [D_MODEL*DATA_W-1:0] q_data_flat,
     input  logic q_data_ready,
 
     input  logic kv_req_valid,
@@ -36,13 +37,16 @@ module dma_controller #(
     output logic kv_req_ready,
 
     output logic kv_data_valid,
-    output wire signed [DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1],
-    output wire signed [DATA_W-1:0] v_tile [0:BK-1][0:D_MODEL-1],
+    output logic signed [DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1],
+    output logic signed [DATA_W-1:0] v_tile [0:BK-1][0:D_MODEL-1],
+    output logic [BK*D_MODEL*DATA_W-1:0] k_tile_flat,
+    output logic [BK*D_MODEL*DATA_W-1:0] v_tile_flat,
     input  logic kv_data_ready,
 
     input  logic o_valid,
     input  logic [$clog2(S_LEN)-1:0] o_row,
     input  logic signed [DATA_W-1:0] o_data [0:D_MODEL-1],
+    input  logic [D_MODEL*DATA_W-1:0] o_data_flat,
     output logic o_ready,
 
     output logic              rd_req_valid,
@@ -107,22 +111,9 @@ module dma_controller #(
     integer seq_row;
     integer seq_word;
     integer comb_word;
-
-    genvar q_gen;
-    genvar tile_row_gen;
-    genvar tile_col_gen;
-
-    generate
-        for (q_gen = 0; q_gen < D_MODEL; q_gen = q_gen + 1) begin : gen_q_out
-            assign q_data[q_gen] = q_buf[q_gen];
-        end
-        for (tile_row_gen = 0; tile_row_gen < BK; tile_row_gen = tile_row_gen + 1) begin : gen_tile_row_out
-            for (tile_col_gen = 0; tile_col_gen < D_MODEL; tile_col_gen = tile_col_gen + 1) begin : gen_tile_col_out
-                assign k_tile[tile_row_gen][tile_col_gen] = k_buf[tile_row_gen][tile_col_gen];
-                assign v_tile[tile_row_gen][tile_col_gen] = v_buf[tile_row_gen][tile_col_gen];
-            end
-        end
-    endgenerate
+    integer comb_row;
+    integer comb_col;
+    integer comb_index;
 
     always_comb begin
         q_req_ready  = (state_q == S_IDLE);
@@ -131,6 +122,19 @@ module dma_controller #(
 
         q_data_valid  = (state_q == S_Q_PRESENT);
         kv_data_valid = (state_q == S_KV_PRESENT);
+
+        for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
+            q_data[comb_col] = q_buf[comb_col];
+            q_data_flat[comb_col * DATA_W +: DATA_W] = q_buf[comb_col];
+        end
+        for (comb_row = 0; comb_row < BK; comb_row = comb_row + 1) begin
+            for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
+                k_tile[comb_row][comb_col] = k_buf[comb_row][comb_col];
+                v_tile[comb_row][comb_col] = v_buf[comb_row][comb_col];
+                k_tile_flat[((comb_row * D_MODEL + comb_col) * DATA_W) +: DATA_W] = k_buf[comb_row][comb_col];
+                v_tile_flat[((comb_row * D_MODEL + comb_col) * DATA_W) +: DATA_W] = v_buf[comb_row][comb_col];
+            end
+        end
 
         rd_req_valid = (state_q == S_Q_RD_REQ) || (state_q == S_K_RD_REQ) || (state_q == S_V_RD_REQ);
         rd_req_bytes = ROW_BYTES;
@@ -153,8 +157,10 @@ module dma_controller #(
         wr_data       = '0;
         if (state_q == S_O_WR_SEND) begin
             for (comb_word = 0; comb_word < WORDS_PER_BEAT; comb_word = comb_word + 1) begin
-                if (((beat_idx_q * WORDS_PER_BEAT) + comb_word) < D_MODEL) begin
-                    wr_data[(comb_word * DATA_W) +: DATA_W] = o_buf[(beat_idx_q * WORDS_PER_BEAT) + comb_word];
+                comb_index = beat_idx_q;
+                comb_index = (comb_index * WORDS_PER_BEAT) + comb_word;
+                if (comb_index < D_MODEL) begin
+                    wr_data[(comb_word * DATA_W) +: DATA_W] = o_buf[comb_index];
                 end
             end
         end
@@ -223,7 +229,7 @@ module dma_controller #(
                         end else if (o_valid) begin
                             o_row_q <= o_row;
                             for (seq_col = 0; seq_col < D_MODEL; seq_col = seq_col + 1) begin
-                                o_buf[seq_col] <= o_data[seq_col];
+                                o_buf[seq_col] <= o_data_flat[seq_col * DATA_W +: DATA_W];
                             end
                             beat_idx_q <= '0;
                             state_q    <= S_O_WR_REQ;
@@ -240,8 +246,10 @@ module dma_controller #(
                     S_Q_RD_RECV: begin
                         if (rd_data_valid && rd_data_ready) begin
                             for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                if (((beat_idx_q * WORDS_PER_BEAT) + seq_word) < D_MODEL) begin
-                                    q_buf[(beat_idx_q * WORDS_PER_BEAT) + seq_word] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                                seq_col = beat_idx_q;
+                                seq_col = (seq_col * WORDS_PER_BEAT) + seq_word;
+                                if (seq_col < D_MODEL) begin
+                                    q_buf[seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
                                 end
                             end
 
@@ -269,8 +277,10 @@ module dma_controller #(
                     S_K_RD_RECV: begin
                         if (rd_data_valid && rd_data_ready) begin
                             for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                if (((beat_idx_q * WORDS_PER_BEAT) + seq_word) < D_MODEL) begin
-                                    k_buf[tile_row_idx_q][(beat_idx_q * WORDS_PER_BEAT) + seq_word] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                                seq_col = beat_idx_q;
+                                seq_col = (seq_col * WORDS_PER_BEAT) + seq_word;
+                                if (seq_col < D_MODEL) begin
+                                    k_buf[tile_row_idx_q][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
                                 end
                             end
 
@@ -300,8 +310,10 @@ module dma_controller #(
                     S_V_RD_RECV: begin
                         if (rd_data_valid && rd_data_ready) begin
                             for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                if (((beat_idx_q * WORDS_PER_BEAT) + seq_word) < D_MODEL) begin
-                                    v_buf[tile_row_idx_q][(beat_idx_q * WORDS_PER_BEAT) + seq_word] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                                seq_col = beat_idx_q;
+                                seq_col = (seq_col * WORDS_PER_BEAT) + seq_word;
+                                if (seq_col < D_MODEL) begin
+                                    v_buf[tile_row_idx_q][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
                                 end
                             end
 
