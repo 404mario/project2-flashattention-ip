@@ -28,12 +28,28 @@ SOURCES=(
 
 run_vvp() {
     local path="$1"
+    shift
     local log="${path%.vvp}.log"
-    vvp "$path" 2>&1 | tee "$log"
+    vvp "$path" "$@" 2>&1 | tee "$log"
     if grep -qE "FAIL|FATAL" "$log"; then
         echo "ERROR: Simulation reported FAIL/FATAL: $path" >&2
         exit 1
     fi
+}
+
+check_output() {
+    local hex_path="$1"
+    local s_len="$2"
+    local d_model="$3"
+    local bk="$4"
+    local scale="$5"
+    python "$ROOT/model/check_top_e2e_output.py" \
+        --hex "$hex_path" \
+        --s-len "$s_len" \
+        --d-model "$d_model" \
+        --bk "$bk" \
+        --scale-q8-8 "$scale" \
+        --check-fp32
 }
 
 # --- Small smoke (S=8, D=8) ---
@@ -50,7 +66,9 @@ iverilog -g2012 -Wall \
     -o "$SMALL_OUT" \
     "${SOURCES[@]}"
 
-run_vvp "$SMALL_OUT"
+SMALL_HEX="$BUILD/tb_flash_attn_top_e2e_small_o.hex"
+run_vvp "$SMALL_OUT" "+OUT_HEX=$SMALL_HEX"
+check_output "$SMALL_HEX" 8 8 4 91
 
 # --- Medium smoke (fast optimized path sanity, S=32, D=16) ---
 MEDIUM_OUT="$BUILD/tb_flash_attn_top_e2e_medium.vvp"
@@ -69,7 +87,9 @@ iverilog -g2012 -Wall \
     -o "$MEDIUM_OUT" \
     "${SOURCES[@]}"
 
-run_vvp "$MEDIUM_OUT"
+MEDIUM_HEX="$BUILD/tb_flash_attn_top_e2e_medium_o.hex"
+run_vvp "$MEDIUM_OUT" "+OUT_HEX=$MEDIUM_HEX"
+check_output "$MEDIUM_HEX" 32 16 8 64
 
 # --- Full-size smoke (S=256, D=64) ---
 if [[ "${RUN_FULL:-0}" == "1" ]]; then
@@ -89,7 +109,9 @@ if [[ "${RUN_FULL:-0}" == "1" ]]; then
         -o "$FULL_OUT" \
         "${SOURCES[@]}"
 
-    run_vvp "$FULL_OUT"
+    FULL_HEX="$BUILD/tb_flash_attn_top_e2e_fullsize_o.hex"
+    run_vvp "$FULL_OUT" "+OUT_HEX=$FULL_HEX"
+    check_output "$FULL_HEX" 256 64 16 32
 else
     echo "Skipping full-size smoke; run with RUN_FULL=1 for S=256,D=64."
 fi

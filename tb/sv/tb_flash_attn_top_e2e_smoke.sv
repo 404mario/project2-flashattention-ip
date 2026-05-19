@@ -119,6 +119,7 @@ module tb_flash_attn_top_e2e_smoke;
     int row;
     int col;
     int changed_count;
+    string out_hex_path;
 
     typedef enum logic [1:0] {
         RD_IDLE,
@@ -728,7 +729,29 @@ module tb_flash_attn_top_e2e_smoke;
         end
     endtask
 
+    task automatic dump_output_memory;
+        int fd;
+        int idx;
+        begin
+            fd = $fopen(out_hex_path, "w");
+            if (fd == 0) begin
+                $display("FAIL could not open output dump path %s", out_hex_path);
+                $fatal(1);
+            end
+
+            for (idx = 0; idx < NUM_ELEMS; idx = idx + 1) begin
+                $fwrite(fd, "%04h\n", o_mem[idx]);
+            end
+            $fclose(fd);
+        end
+    endtask
+
     initial begin
+        out_hex_path = "sim_build/tb_flash_attn_top_e2e_output.hex";
+        if (!$value$plusargs("OUT_HEX=%s", out_hex_path)) begin
+            out_hex_path = "sim_build/tb_flash_attn_top_e2e_output.hex";
+        end
+
         if (VERBOSE != 0) begin
             $display("INFO top e2e initial entered");
             $fflush();
@@ -820,6 +843,7 @@ module tb_flash_attn_top_e2e_smoke;
         end
 
         check_output_memory();
+        dump_output_memory();
 
         axil_write(REG_STATUS, STATUS_DONE);
         repeat (4) @(posedge clk);
