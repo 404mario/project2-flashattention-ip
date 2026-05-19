@@ -20,6 +20,21 @@ EXP_LUT_Q08 = np.array(
 )
 
 
+EXP_LUT_Q16 = np.array(
+    [
+        65536, 57835, 51039, 45042, 39750, 35079, 30957, 27319,
+        24109, 21276, 18776, 16570, 14623, 12905, 11388, 10050,
+        8869, 7827, 6907, 6096, 5380, 4747, 4190, 3697,
+        3263, 2879, 2541, 2243, 1979, 1746, 1541, 1360,
+        1200, 1059, 935, 825, 728, 642, 567, 500,
+        442, 390, 344, 303, 268, 236, 209, 184,
+        162, 143, 127, 112, 99, 87, 77, 68,
+        60, 53, 47, 41, 36, 32, 28, 25,
+    ],
+    dtype=np.int64,
+)
+
+
 def to_hex16(value):
     return f"{int(value) & 0xFFFF:04x}"
 
@@ -64,6 +79,38 @@ def exp_approx_q08(delta_q88):
     return int(EXP_LUT_Q08[lut_index])
 
 
+def exp_approx_interp(delta, score_frac, weight_frac):
+    one = 1 << weight_frac
+    if delta >= 0:
+        return one
+
+    shift = score_frac - 3
+    if shift <= 0:
+        raise ValueError(f"score_frac={score_frac} is too small for 1/8-step exp LUT")
+
+    abs_delta = -int(delta)
+    max_delta = (len(EXP_LUT_Q16) - 1) << shift
+    if abs_delta > max_delta:
+        return 0
+
+    if weight_frac == 16:
+        lut = EXP_LUT_Q16
+    elif weight_frac < 16:
+        round_value = 1 << (16 - weight_frac - 1)
+        lut = (EXP_LUT_Q16 + round_value) >> (16 - weight_frac)
+    else:
+        lut = EXP_LUT_Q16 << (weight_frac - 16)
+
+    idx = abs_delta >> shift
+    rem = abs_delta - (idx << shift)
+    if idx == len(lut) - 1:
+        return int(lut[idx])
+
+    y0 = int(lut[idx])
+    y1 = int(lut[idx + 1])
+    return y0 + (((y1 - y0) * rem + (1 << (shift - 1))) >> shift)
+
+
 def trunc_div_signed(numer, denom):
     if denom == 0:
         return 0
@@ -101,9 +148,12 @@ def load_inputs(args):
     return build_inputs(args.s_len, args.d_model)
 
 
-def rtl_expected(q, k, v, bk, scale_q8_8, causal=True):
+def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8):
     s_len, d_model = q.shape
     out = np.zeros((s_len, d_model), dtype=np.int64)
+    weight_frac = softmax_frac
+    weight_one = 1 << weight_frac
+    scale_shift = (3 * 8) - softmax_frac
 
     for row in range(s_len):
         m_state = 0
@@ -118,24 +168,33 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True):
                     continue
 
                 dot = int(np.dot(q[row], k[key]))
-                score = ((dot >> 8) * int(scale_q8_8)) >> 8
+                if softmax_frac == 8:
+                    score = ((dot >> 8) * int(scale_q8_8)) >> 8
+                else:
+                    score = (dot * int(scale_q8_8)) >> scale_shift
 
                 if l_state == 0:
                     old_scale = 0
-                    new_weight = 256
+                    new_weight = weight_one
                     m_state = score
-                    l_state = 256
+                    l_state = weight_one
                 elif score > m_state:
-                    old_scale = exp_approx_q08(m_state - score)
-                    new_weight = 256
-                    l_state = ((l_state * old_scale) >> 8) + new_weight
+                    if softmax_frac == 8:
+                        old_scale = exp_approx_q08(m_state - score)
+                    else:
+                        old_scale = exp_approx_interp(m_state - score, softmax_frac, weight_frac)
+                    new_weight = weight_one
+                    l_state = ((l_state * old_scale) >> weight_frac) + new_weight
                     m_state = score
                 else:
-                    old_scale = 256
-                    new_weight = exp_approx_q08(score - m_state)
-                    l_state = ((l_state * old_scale) >> 8) + new_weight
+                    old_scale = weight_one
+                    if softmax_frac == 8:
+                        new_weight = exp_approx_q08(score - m_state)
+                    else:
+                        new_weight = exp_approx_interp(score - m_state, softmax_frac, weight_frac)
+                    l_state = ((l_state * old_scale) >> weight_frac) + new_weight
 
-                acc = ((acc * old_scale) >> 8) + (new_weight * v[key])
+                acc = ((acc * old_scale) >> weight_frac) + (new_weight * v[key])
 
         for d in range(d_model):
             out[row, d] = saturate_i16(trunc_div_signed(int(acc[d]), int(l_state)))
@@ -188,6 +247,7 @@ def main():
     parser.add_argument("--d-model", type=int, required=True)
     parser.add_argument("--bk", type=int, required=True)
     parser.add_argument("--scale-q8-8", type=int, required=True)
+    parser.add_argument("--softmax-frac", type=int, default=8)
     parser.add_argument("--noncausal", action="store_true")
     parser.add_argument("--check-fp32", action="store_true")
     parser.add_argument("--q-hex", help="Optional Q input vector hex file")
@@ -201,8 +261,16 @@ def main():
     q, k, v = load_inputs(args)
     causal = not args.noncausal
 
-    expected_rtl = rtl_expected(q, k, v, args.bk, args.scale_q8_8, causal=causal)
-    max_int = report("RTL output vs RTL-Q0.8 bitexact mirror", got, expected_rtl)
+    expected_rtl = rtl_expected(
+        q,
+        k,
+        v,
+        args.bk,
+        args.scale_q8_8,
+        causal=causal,
+        softmax_frac=args.softmax_frac,
+    )
+    max_int = report("RTL output vs RTL fixed-point mirror", got, expected_rtl)
     if max_int != 0:
         raise SystemExit(1)
 

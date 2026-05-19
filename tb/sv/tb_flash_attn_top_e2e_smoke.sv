@@ -14,6 +14,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int BQ             = 16;
     parameter int USE_DOT_TREE    = 1;
     parameter int USE_CAUSAL_SKIP = 1;
+    parameter int SOFTMAX_FRAC    = 16;
     parameter int MAX_CYCLES      = 0;
     parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
@@ -160,7 +161,8 @@ module tb_flash_attn_top_e2e_smoke;
         .AXI_DATA_W(AXI_DATA_W),
         .BQ(BQ),
         .USE_DOT_TREE(USE_DOT_TREE),
-        .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP)
+        .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
+        .SOFTMAX_FRAC(SOFTMAX_FRAC)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),

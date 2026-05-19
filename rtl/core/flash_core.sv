@@ -9,7 +9,8 @@ module flash_core #(
     parameter int FRAC_W          = 8,
     parameter int BQ              = 1,
     parameter int USE_DOT_TREE    = 0,
-    parameter int USE_CAUSAL_SKIP = 0
+    parameter int USE_CAUSAL_SKIP = 0,
+    parameter int SOFTMAX_FRAC    = FRAC_W
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -53,10 +54,12 @@ module flash_core #(
     localparam int BQ_EFF       = (BQ < 1) ? 1 : ((BQ > S_LEN) ? S_LEN : BQ);
     localparam int BQ_IDX_W     = (BQ_EFF <= 1) ? 1 : $clog2(BQ_EFF);
     localparam int BQ_LEN_W     = (BQ_EFF <= 1) ? 1 : $clog2(BQ_EFF + 1);
-    localparam int WEIGHT_W     = 16;
-    localparam int WEIGHT_FRAC  = 8;
+    localparam int WEIGHT_W     = (SOFTMAX_FRAC > 8) ? 18 : 16;
+    localparam int WEIGHT_FRAC  = SOFTMAX_FRAC;
     localparam int L_W          = ACC_W;
     localparam int SCALE_PROD_W = ACC_W + 32;
+    localparam int SCALE_SHIFT  = (SOFTMAX_FRAC == FRAC_W) ? (2 * FRAC_W) :
+                                  (3 * FRAC_W - SOFTMAX_FRAC);
 
     typedef enum logic [3:0] {
         ST_IDLE,
@@ -113,6 +116,7 @@ module flash_core #(
     logic             score_should_skip;
 
     logic signed [SCALE_PROD_W-1:0] scaled_product;
+    logic signed [SCALE_PROD_W-1:0] legacy_scaled_product;
     logic signed [ACC_W-1:0] scaled_score;
     logic signed [ACC_W-1:0] masked_score;
     logic score_valid;
@@ -213,7 +217,8 @@ module flash_core #(
         .SCORE_W(ACC_W),
         .L_W(L_W),
         .WEIGHT_W(WEIGHT_W),
-        .WEIGHT_FRAC(WEIGHT_FRAC)
+        .WEIGHT_FRAC(WEIGHT_FRAC),
+        .SCORE_FRAC(SOFTMAX_FRAC)
     ) u_online_softmax (
         .score_valid(score_valid),
         .score(masked_score),
@@ -263,8 +268,11 @@ module flash_core #(
     assign score_should_skip =
         (USE_CAUSAL_SKIP != 0) && causal_en && (current_key_index > current_q_row);
 
-    assign scaled_product = (dot_value >>> FRAC_W) * scale;
-    assign scaled_score = scaled_product >>> FRAC_W;
+    assign legacy_scaled_product = (dot_value >>> FRAC_W) * scale;
+    assign scaled_product = dot_value * scale;
+    assign scaled_score = (SOFTMAX_FRAC == FRAC_W) ?
+                          (legacy_scaled_product >>> FRAC_W) :
+                          (scaled_product >>> SCALE_SHIFT);
 
     always_comb begin
         busy  = (state_q != ST_IDLE) && (state_q != ST_DONE);
