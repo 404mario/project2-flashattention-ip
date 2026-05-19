@@ -87,6 +87,20 @@ def build_inputs(s_len, d_model):
     return q, k, v
 
 
+def load_inputs(args):
+    vector_paths = [args.q_hex, args.k_hex, args.v_hex]
+    if any(vector_paths) and not all(vector_paths):
+        raise ValueError("--q-hex, --k-hex, and --v-hex must be provided together")
+
+    if all(vector_paths):
+        q = read_hex16_matrix(Path(args.q_hex), args.s_len, args.d_model)
+        k = read_hex16_matrix(Path(args.k_hex), args.s_len, args.d_model)
+        v = read_hex16_matrix(Path(args.v_hex), args.s_len, args.d_model)
+        return q, k, v
+
+    return build_inputs(args.s_len, args.d_model)
+
+
 def rtl_expected(q, k, v, bk, scale_q8_8, causal=True):
     s_len, d_model = q.shape
     out = np.zeros((s_len, d_model), dtype=np.int64)
@@ -176,17 +190,25 @@ def main():
     parser.add_argument("--scale-q8-8", type=int, required=True)
     parser.add_argument("--noncausal", action="store_true")
     parser.add_argument("--check-fp32", action="store_true")
+    parser.add_argument("--q-hex", help="Optional Q input vector hex file")
+    parser.add_argument("--k-hex", help="Optional K input vector hex file")
+    parser.add_argument("--v-hex", help="Optional V input vector hex file")
+    parser.add_argument("--golden-hex", help="Optional supplied output golden hex file")
     args = parser.parse_args()
 
     hex_path = Path(args.hex)
     got = read_hex16_matrix(hex_path, args.s_len, args.d_model)
-    q, k, v = build_inputs(args.s_len, args.d_model)
+    q, k, v = load_inputs(args)
     causal = not args.noncausal
 
     expected_rtl = rtl_expected(q, k, v, args.bk, args.scale_q8_8, causal=causal)
     max_int = report("RTL output vs RTL-Q0.8 bitexact mirror", got, expected_rtl)
     if max_int != 0:
         raise SystemExit(1)
+
+    if args.golden_hex:
+        supplied_golden = read_hex16_matrix(Path(args.golden_hex), args.s_len, args.d_model)
+        report("RTL output vs supplied golden_o.hex", got, supplied_golden)
 
     if args.check_fp32:
         expected_fp32 = fp32_expected(q, k, v, causal=causal)
