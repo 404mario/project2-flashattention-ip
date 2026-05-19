@@ -148,14 +148,18 @@ def load_inputs(args):
     return build_inputs(args.s_len, args.d_model)
 
 
-def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8):
+def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8, valid_len=None):
     s_len, d_model = q.shape
     out = np.zeros((s_len, d_model), dtype=np.int64)
     weight_frac = softmax_frac
     weight_one = 1 << weight_frac
     scale_shift = (3 * 8) - softmax_frac
+    valid_len = s_len if valid_len is None else max(0, min(int(valid_len), s_len))
 
     for row in range(s_len):
+        if row >= valid_len:
+            continue
+
         m_state = 0
         l_state = 0
         acc = np.zeros(d_model, dtype=np.int64)
@@ -164,6 +168,8 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8):
             kv_len = min(bk, s_len - kv_start)
             for offset in range(kv_len):
                 key = kv_start + offset
+                if key >= valid_len:
+                    continue
                 if causal and key > row:
                     continue
 
@@ -202,18 +208,24 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8):
     return out
 
 
-def fp32_expected(q, k, v, causal=True):
+def fp32_expected(q, k, v, causal=True, valid_len=None):
     qf = q.astype(np.float64) / 256.0
     kf = k.astype(np.float64) / 256.0
     vf = v.astype(np.float64) / 256.0
     s_len, d_model = q.shape
+    valid_len = s_len if valid_len is None else max(0, min(int(valid_len), s_len))
     scores = (qf @ kf.T) / math.sqrt(float(d_model))
     if causal:
         mask = np.triu(np.ones((s_len, s_len), dtype=bool), k=1)
         scores = np.where(mask, -1.0e30, scores)
+    if valid_len < s_len:
+        scores[:, valid_len:] = -1.0e30
+        scores[valid_len:, :] = -1.0e30
     scores = scores - np.max(scores, axis=1, keepdims=True)
     probs = np.exp(scores)
     probs = probs / np.sum(probs, axis=1, keepdims=True)
+    if valid_len < s_len:
+        probs[valid_len:, :] = 0.0
     outf = probs @ vf
     out_int = np.rint(outf * 256.0).astype(np.int64)
     return np.clip(out_int, -32768, 32767)
@@ -248,6 +260,7 @@ def main():
     parser.add_argument("--bk", type=int, required=True)
     parser.add_argument("--scale-q8-8", type=int, required=True)
     parser.add_argument("--softmax-frac", type=int, default=8)
+    parser.add_argument("--valid-len", type=int)
     parser.add_argument("--noncausal", action="store_true")
     parser.add_argument("--check-fp32", action="store_true")
     parser.add_argument("--q-hex", help="Optional Q input vector hex file")
@@ -269,6 +282,7 @@ def main():
         args.scale_q8_8,
         causal=causal,
         softmax_frac=args.softmax_frac,
+        valid_len=args.valid_len,
     )
     max_int = report("RTL output vs RTL fixed-point mirror", got, expected_rtl)
     if max_int != 0:
@@ -279,7 +293,7 @@ def main():
         report("RTL output vs supplied golden_o.hex", got, supplied_golden)
 
     if args.check_fp32:
-        expected_fp32 = fp32_expected(q, k, v, causal=causal)
+        expected_fp32 = fp32_expected(q, k, v, causal=causal, valid_len=args.valid_len)
         report("RTL output vs FP32 softmax golden", got, expected_fp32)
 
 

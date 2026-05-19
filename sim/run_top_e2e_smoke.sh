@@ -44,7 +44,8 @@ check_output() {
     local bk="$4"
     local scale="$5"
     local softmax_frac="${6:-16}"
-    shift 6
+    local valid_len="${7:-$s_len}"
+    shift 7
     python "$ROOT/model/check_top_e2e_output.py" \
         --hex "$hex_path" \
         --s-len "$s_len" \
@@ -52,6 +53,7 @@ check_output() {
         --bk "$bk" \
         --scale-q8-8 "$scale" \
         --softmax-frac "$softmax_frac" \
+        --valid-len "$valid_len" \
         --check-fp32 \
         "$@"
 }
@@ -83,7 +85,28 @@ iverilog -g2012 -Wall \
 
 SMALL_HEX="$BUILD/tb_flash_attn_top_e2e_small_o.hex"
 run_vvp "$SMALL_OUT" "+OUT_HEX=$SMALL_HEX"
-check_output "$SMALL_HEX" 8 8 4 91 16
+check_output "$SMALL_HEX" 8 8 4 91 16 8
+
+# --- Padding mask smoke (VALID_LEN < S_LEN) ---
+PADDING_OUT="$BUILD/tb_flash_attn_top_e2e_padding.vvp"
+iverilog -g2012 -Wall \
+    -I "$TB_INCLUDE" \
+    -s tb_flash_attn_top_e2e_smoke \
+    -P tb_flash_attn_top_e2e_smoke.S_LEN=16 \
+    -P tb_flash_attn_top_e2e_smoke.D_MODEL=8 \
+    -P tb_flash_attn_top_e2e_smoke.BK=4 \
+    -P tb_flash_attn_top_e2e_smoke.BQ=4 \
+    -P tb_flash_attn_top_e2e_smoke.SOFTMAX_FRAC=16 \
+    -P tb_flash_attn_top_e2e_smoke.VALID_LEN=5 \
+    -P tb_flash_attn_top_e2e_smoke.SCALE_Q8_8=91 \
+    -P tb_flash_attn_top_e2e_smoke.CHECK_BITEXACT=0 \
+    -P tb_flash_attn_top_e2e_smoke.TIMEOUT_CYCLES=300000 \
+    -o "$PADDING_OUT" \
+    "${SOURCES[@]}"
+
+PADDING_HEX="$BUILD/tb_flash_attn_top_e2e_padding_o.hex"
+run_vvp "$PADDING_OUT" "+OUT_HEX=$PADDING_HEX"
+check_output "$PADDING_HEX" 16 8 4 91 16 5
 
 # --- Medium smoke (fast optimized path sanity, S=32, D=16) ---
 MEDIUM_OUT="$BUILD/tb_flash_attn_top_e2e_medium.vvp"
@@ -105,7 +128,7 @@ iverilog -g2012 -Wall \
 
 MEDIUM_HEX="$BUILD/tb_flash_attn_top_e2e_medium_o.hex"
 run_vvp "$MEDIUM_OUT" "+OUT_HEX=$MEDIUM_HEX"
-check_output "$MEDIUM_HEX" 32 16 8 64 16
+check_output "$MEDIUM_HEX" 32 16 8 64 16 32
 
 # --- Vector-backed full-size smoke (S=256, D=64) ---
 if [[ "${RUN_VECTORS:-0}" == "1" ]]; then
@@ -133,7 +156,7 @@ if [[ "${RUN_VECTORS:-0}" == "1" ]]; then
         "+K_HEX=$ROOT/tb/vectors/input_k.hex" \
         "+V_HEX=$ROOT/tb/vectors/input_v.hex" \
         "+OUT_HEX=$VECTOR_HEX"
-    check_output "$VECTOR_HEX" 256 64 16 32 16 \
+    check_output "$VECTOR_HEX" 256 64 16 32 16 256 \
         --q-hex "$ROOT/tb/vectors/input_q.hex" \
         --k-hex "$ROOT/tb/vectors/input_k.hex" \
         --v-hex "$ROOT/tb/vectors/input_v.hex" \
@@ -163,7 +186,7 @@ if [[ "${RUN_FULL:-0}" == "1" ]]; then
 
     FULL_HEX="$BUILD/tb_flash_attn_top_e2e_fullsize_o.hex"
     run_vvp "$FULL_OUT" "+OUT_HEX=$FULL_HEX"
-    check_output "$FULL_HEX" 256 64 16 32 16
+    check_output "$FULL_HEX" 256 64 16 32 16 256
 else
     echo "Skipping full-size smoke; run with RUN_FULL=1 for S=256,D=64."
 fi

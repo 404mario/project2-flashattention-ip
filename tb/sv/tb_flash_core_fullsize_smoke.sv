@@ -69,6 +69,7 @@ module tb_flash_core_fullsize_smoke;
         .causal_en(causal_en),
         .neg_large(neg_large),
         .scale(scale),
+        .valid_len(S_LEN),
         .q_req_valid(q_req_valid),
         .q_req_row(q_req_row),
         .q_req_ready(q_req_ready),
