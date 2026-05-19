@@ -1,8 +1,13 @@
 # gen_vectors.py
 import numpy as np
 import os
+import sys
 import config as cfg
 from model_fp32 import standard_attention_fp32
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # --- 📁 局部路径与文件名管理 (遵守 README 规范) ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

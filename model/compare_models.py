@@ -1,11 +1,17 @@
 # model/compare_models.py
 
+import sys
+
 import numpy as np
 import config as cfg
 
 # 继续复用你现有 gen_vectors.py / model_fixed.py 里面的函数和路径
 from gen_vectors import hex_to_float_fixed, Q_FILE, K_FILE, V_FILE, O_FILE
 from model_fixed import flash_attn_fixed_sim
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 
 MAE_LIMIT_DEFAULT = 0.03

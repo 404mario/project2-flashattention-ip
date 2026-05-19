@@ -128,7 +128,7 @@ module axi_lite_regs #(
     assign scale       = scale_q;
     assign irq         = irq_en_q && done_sticky_q;
 
-    always_comb begin
+    always @* begin
         s_axil_rdata = '0;
         unique case (raddr_q)
             REG_CTRL: begin
@@ -208,28 +208,28 @@ module axi_lite_regs #(
             if (awaddr_valid_q && wdata_valid_q && !s_axil_bvalid) begin
                 unique case (awaddr_q)
                     REG_CTRL: begin
-                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[0]) begin
+                        if ((apply_wstrb32(32'd0, wdata_q, wstrb_q) & 32'h0000_0001) != 32'd0) begin
                             start_pulse   <= 1'b1;
                             done_sticky_q <= 1'b0;
                             error_sticky_q <= 1'b0;
                         end
-                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[1]) begin
+                        if ((apply_wstrb32(32'd0, wdata_q, wstrb_q) & 32'h0000_0002) != 32'd0) begin
                             soft_reset    <= 1'b1;
                             done_sticky_q <= 1'b0;
                             error_sticky_q <= 1'b0;
                         end
-                        irq_en_q <= apply_wstrb32({29'd0, irq_en_q, 2'd0}, wdata_q, wstrb_q)[2];
+                        irq_en_q <= ((apply_wstrb32({29'd0, irq_en_q, 2'd0}, wdata_q, wstrb_q) & 32'h0000_0004) != 32'd0);
                     end
                     REG_STATUS: begin
-                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[1]) begin
+                        if ((apply_wstrb32(32'd0, wdata_q, wstrb_q) & 32'h0000_0002) != 32'd0) begin
                             done_sticky_q <= 1'b0;
                         end
-                        if (apply_wstrb32(32'd0, wdata_q, wstrb_q)[2]) begin
+                        if ((apply_wstrb32(32'd0, wdata_q, wstrb_q) & 32'h0000_0004) != 32'd0) begin
                             error_sticky_q <= 1'b0;
                         end
                     end
                     REG_CFG: begin
-                        causal_en_q <= apply_wstrb32({31'd0, causal_en_q}, wdata_q, wstrb_q)[0];
+                        causal_en_q <= ((apply_wstrb32({31'd0, causal_en_q}, wdata_q, wstrb_q) & 32'h0000_0001) != 32'd0);
                     end
                     REG_Q_BASE_L: begin
                         q_base_q[31:0] <= apply_wstrb32(q_base_q[31:0], wdata_q, wstrb_q);

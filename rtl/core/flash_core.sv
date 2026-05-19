@@ -41,6 +41,7 @@ module flash_core #(
     output logic o_valid,
     output logic [$clog2(S_LEN)-1:0] o_row,
     output wire signed [DATA_W-1:0] o_data [0:D_MODEL-1],
+    output logic [D_MODEL*DATA_W-1:0] o_data_flat,
     input  logic o_ready
 );
     localparam int ROW_W       = (S_LEN <= 1) ? 1 : $clog2(S_LEN);
@@ -273,6 +274,9 @@ module flash_core #(
 
         o_valid       = (state_q == ST_EMIT_O);
         o_row         = sched_row;
+        for (comb_d = 0; comb_d < D_MODEL; comb_d = comb_d + 1) begin
+            o_data_flat[comb_d * DATA_W +: DATA_W] = o_data_q[comb_d];
+        end
 
         sched_start   = start && (state_q == ST_IDLE);
         sched_step    = 1'b0;
