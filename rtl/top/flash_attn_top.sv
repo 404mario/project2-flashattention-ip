@@ -8,7 +8,10 @@ module flash_attn_top #(
     parameter int FRAC_W     = 8,
     parameter int ACC_W      = 48,
     parameter int ADDR_W     = 64,
-    parameter int AXI_DATA_W = 64
+    parameter int AXI_DATA_W = 64,
+    parameter int BQ         = 16,
+    parameter int USE_DOT_TREE    = 1,
+    parameter int USE_CAUSAL_SKIP = 1
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -80,6 +83,8 @@ module flash_attn_top #(
     logic signed [31:0] neg_large;
     logic signed [31:0] scale;
     logic [31:0] cycle_count_q;
+    logic [63:0] rd_bytes_count_q;
+    logic [63:0] wr_bytes_count_q;
     logic irq_int;
 
     logic core_busy;
@@ -175,15 +180,21 @@ module flash_attn_top #(
             run_active_q     <= 1'b0;
             core_done_seen_q <= 1'b0;
             cycle_count_q    <= 32'd0;
+            rd_bytes_count_q <= 64'd0;
+            wr_bytes_count_q <= 64'd0;
         end else if (soft_reset) begin
             run_active_q     <= 1'b0;
             core_done_seen_q <= 1'b0;
             cycle_count_q    <= 32'd0;
+            rd_bytes_count_q <= 64'd0;
+            wr_bytes_count_q <= 64'd0;
         end else begin
             if (start_pulse) begin
                 run_active_q     <= 1'b1;
                 core_done_seen_q <= 1'b0;
                 cycle_count_q    <= 32'd0;
+                rd_bytes_count_q <= 64'd0;
+                wr_bytes_count_q <= 64'd0;
             end else begin
                 if (overall_done_pulse) begin
                     run_active_q <= 1'b0;
@@ -191,6 +202,13 @@ module flash_attn_top #(
                 if (run_active_q && !overall_done_pulse) begin
                     cycle_count_q <= cycle_count_q + 1'b1;
                 end
+            end
+
+            if (rd_req_valid && rd_req_ready) begin
+                rd_bytes_count_q <= rd_bytes_count_q + rd_req_bytes;
+            end
+            if (wr_req_valid && wr_req_ready) begin
+                wr_bytes_count_q <= wr_bytes_count_q + wr_req_bytes;
             end
 
             if (core_done) begin
@@ -241,6 +259,8 @@ module flash_attn_top #(
         .done(overall_done_pulse),
         .error(overall_error),
         .cycles(cycle_count_q),
+        .rd_bytes(rd_bytes_count_q),
+        .wr_bytes(wr_bytes_count_q),
         .irq(irq_int)
     );
 
@@ -250,7 +270,10 @@ module flash_attn_top #(
         .BK(BK),
         .DATA_W(DATA_W),
         .ACC_W(ACC_W),
-        .FRAC_W(FRAC_W)
+        .FRAC_W(FRAC_W),
+        .BQ(BQ),
+        .USE_DOT_TREE(USE_DOT_TREE),
+        .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP)
     ) u_flash_core (
         .clk(clk),
         .rst_n(work_rst_n),

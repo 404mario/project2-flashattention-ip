@@ -48,6 +48,8 @@ module axi_lite_regs #(
     input  logic                 done,
     input  logic                 error,
     input  logic [31:0]          cycles,
+    input  logic [63:0]          rd_bytes,
+    input  logic [63:0]          wr_bytes,
 
     output logic                 irq
 );
@@ -67,6 +69,10 @@ module axi_lite_regs #(
     localparam logic [ADDR_W-1:0] REG_NEG_LARGE    = 'h38;
     localparam logic [ADDR_W-1:0] REG_SCALE        = 'h3C;
     localparam logic [ADDR_W-1:0] REG_CYCLES       = 'h40;
+    localparam logic [ADDR_W-1:0] REG_RD_BYTES_L   = 'h44;
+    localparam logic [ADDR_W-1:0] REG_RD_BYTES_H   = 'h48;
+    localparam logic [ADDR_W-1:0] REG_WR_BYTES_L   = 'h4C;
+    localparam logic [ADDR_W-1:0] REG_WR_BYTES_H   = 'h50;
 
     localparam logic signed [31:0] DEFAULT_NEG_LARGE = -32'sd32768;
     localparam logic signed [31:0] DEFAULT_SCALE     =  32'sd32; // 0.125 in Q8.8
@@ -154,6 +160,10 @@ module axi_lite_regs #(
             REG_NEG_LARGE:     s_axil_rdata = neg_large_q;
             REG_SCALE:         s_axil_rdata = scale_q;
             REG_CYCLES:        s_axil_rdata = cycles;
+            REG_RD_BYTES_L:    s_axil_rdata = rd_bytes[31:0];
+            REG_RD_BYTES_H:    s_axil_rdata = rd_bytes[63:32];
+            REG_WR_BYTES_L:    s_axil_rdata = wr_bytes[31:0];
+            REG_WR_BYTES_H:    s_axil_rdata = wr_bytes[63:32];
             default:           s_axil_rdata = '0;
         endcase
     end

@@ -28,10 +28,9 @@ SOURCES=(
 
 run_vvp() {
     local path="$1"
-    local output
-    output="$(vvp "$path" 2>&1)"
-    echo "$output"
-    if echo "$output" | grep -qE "FAIL|FATAL"; then
+    local log="${path%.vvp}.log"
+    vvp "$path" 2>&1 | tee "$log"
+    if grep -qE "FAIL|FATAL" "$log"; then
         echo "ERROR: Simulation reported FAIL/FATAL: $path" >&2
         exit 1
     fi
@@ -53,20 +52,46 @@ iverilog -g2012 -Wall \
 
 run_vvp "$SMALL_OUT"
 
-# --- Full-size smoke (S=256, D=64) ---
-FULL_OUT="$BUILD/tb_flash_attn_top_e2e_fullsize_smoke.vvp"
+# --- Medium smoke (fast optimized path sanity, S=32, D=16) ---
+MEDIUM_OUT="$BUILD/tb_flash_attn_top_e2e_medium.vvp"
 iverilog -g2012 -Wall \
     -I "$TB_INCLUDE" \
     -s tb_flash_attn_top_e2e_smoke \
-    -P tb_flash_attn_top_e2e_smoke.S_LEN=256 \
-    -P tb_flash_attn_top_e2e_smoke.D_MODEL=64 \
-    -P tb_flash_attn_top_e2e_smoke.BK=16 \
-    -P tb_flash_attn_top_e2e_smoke.SCALE_Q8_8=32 \
+    -P tb_flash_attn_top_e2e_smoke.S_LEN=32 \
+    -P tb_flash_attn_top_e2e_smoke.D_MODEL=16 \
+    -P tb_flash_attn_top_e2e_smoke.BK=8 \
+    -P tb_flash_attn_top_e2e_smoke.BQ=8 \
+    -P tb_flash_attn_top_e2e_smoke.SCALE_Q8_8=64 \
     -P tb_flash_attn_top_e2e_smoke.CHECK_BITEXACT=0 \
-    -P tb_flash_attn_top_e2e_smoke.TIMEOUT_CYCLES=8000000 \
-    -o "$FULL_OUT" \
+    -P tb_flash_attn_top_e2e_smoke.TIMEOUT_CYCLES=800000 \
+    -P tb_flash_attn_top_e2e_smoke.MAX_CYCLES=120000 \
+    -P tb_flash_attn_top_e2e_smoke.PROGRESS_EVERY=50000 \
+    -o "$MEDIUM_OUT" \
     "${SOURCES[@]}"
 
-run_vvp "$FULL_OUT"
+run_vvp "$MEDIUM_OUT"
+
+# --- Full-size smoke (S=256, D=64) ---
+if [[ "${RUN_FULL:-0}" == "1" ]]; then
+    FULL_OUT="$BUILD/tb_flash_attn_top_e2e_fullsize_smoke.vvp"
+    iverilog -g2012 -Wall \
+        -I "$TB_INCLUDE" \
+        -s tb_flash_attn_top_e2e_smoke \
+        -P tb_flash_attn_top_e2e_smoke.S_LEN=256 \
+        -P tb_flash_attn_top_e2e_smoke.D_MODEL=64 \
+        -P tb_flash_attn_top_e2e_smoke.BK=16 \
+        -P tb_flash_attn_top_e2e_smoke.BQ=16 \
+        -P tb_flash_attn_top_e2e_smoke.SCALE_Q8_8=32 \
+        -P tb_flash_attn_top_e2e_smoke.CHECK_BITEXACT=0 \
+        -P tb_flash_attn_top_e2e_smoke.TIMEOUT_CYCLES=2000000 \
+        -P tb_flash_attn_top_e2e_smoke.MAX_CYCLES=300000 \
+        -P tb_flash_attn_top_e2e_smoke.PROGRESS_EVERY=50000 \
+        -o "$FULL_OUT" \
+        "${SOURCES[@]}"
+
+    run_vvp "$FULL_OUT"
+else
+    echo "Skipping full-size smoke; run with RUN_FULL=1 for S=256,D=64."
+fi
 
 echo "Top end-to-end smoke checks passed."

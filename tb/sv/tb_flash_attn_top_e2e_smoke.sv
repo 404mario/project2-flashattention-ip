@@ -11,6 +11,11 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int SCALE_Q8_8     = 91;
     parameter int CHECK_BITEXACT = 1;
     parameter int TIMEOUT_CYCLES = 200000;
+    parameter int BQ             = 16;
+    parameter int USE_DOT_TREE    = 1;
+    parameter int USE_CAUSAL_SKIP = 1;
+    parameter int MAX_CYCLES      = 0;
+    parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
 
     localparam int ADDR_W         = 64;
@@ -42,6 +47,10 @@ module tb_flash_attn_top_e2e_smoke;
     localparam logic [31:0] REG_NEG_LARGE    = 32'h38;
     localparam logic [31:0] REG_SCALE        = 32'h3c;
     localparam logic [31:0] REG_CYCLES       = 32'h40;
+    localparam logic [31:0] REG_RD_BYTES_L   = 32'h44;
+    localparam logic [31:0] REG_RD_BYTES_H   = 32'h48;
+    localparam logic [31:0] REG_WR_BYTES_L   = 32'h4c;
+    localparam logic [31:0] REG_WR_BYTES_H   = 32'h50;
 
     localparam logic [31:0] CTRL_START       = 32'h0000_0001;
     localparam logic [31:0] STATUS_BUSY      = 32'h0000_0001;
@@ -101,6 +110,10 @@ module tb_flash_attn_top_e2e_smoke;
     logic [15:0] o_mem [0:NUM_ELEMS-1];
     logic [31:0] status_value;
     logic [31:0] cycles_value;
+    logic [31:0] rd_bytes_l;
+    logic [31:0] rd_bytes_h;
+    logic [31:0] wr_bytes_l;
+    logic [31:0] wr_bytes_h;
     int wait_cycles;
     bit saw_busy;
     int row;
@@ -135,7 +148,10 @@ module tb_flash_attn_top_e2e_smoke;
         .FRAC_W(FRAC_W),
         .ACC_W(ACC_W),
         .ADDR_W(ADDR_W),
-        .AXI_DATA_W(AXI_DATA_W)
+        .AXI_DATA_W(AXI_DATA_W),
+        .BQ(BQ),
+        .USE_DOT_TREE(USE_DOT_TREE),
+        .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -763,6 +779,12 @@ module tb_flash_attn_top_e2e_smoke;
                 $display("FAIL STATUS.ERROR set status=%08h", status_value);
                 $fatal(1);
             end
+            if ((PROGRESS_EVERY != 0) && ((wait_cycles % PROGRESS_EVERY) == 0)) begin
+                axil_read(REG_CYCLES, cycles_value);
+                $display("PROGRESS top e2e S=%0d D=%0d BK=%0d BQ=%0d wait_cycles=%0d status=%08h cycles=%0d",
+                         S_LEN, D_MODEL, BK, BQ, wait_cycles, status_value, cycles_value);
+                $fflush();
+            end
         end
 
         if ((status_value & STATUS_DONE) == 0) begin
@@ -779,6 +801,23 @@ module tb_flash_attn_top_e2e_smoke;
             $display("FAIL CYCLES stayed zero");
             $fatal(1);
         end
+        if ((MAX_CYCLES != 0) && (cycles_value > MAX_CYCLES)) begin
+            $display("FAIL CYCLES=%0d exceeded MAX_CYCLES=%0d", cycles_value, MAX_CYCLES);
+            $fatal(1);
+        end
+
+        axil_read(REG_RD_BYTES_L, rd_bytes_l);
+        axil_read(REG_RD_BYTES_H, rd_bytes_h);
+        axil_read(REG_WR_BYTES_L, wr_bytes_l);
+        axil_read(REG_WR_BYTES_H, wr_bytes_h);
+        if ({rd_bytes_h, rd_bytes_l} == 64'd0) begin
+            $display("FAIL RD_BYTES stayed zero");
+            $fatal(1);
+        end
+        if ({wr_bytes_h, wr_bytes_l} == 64'd0) begin
+            $display("FAIL WR_BYTES stayed zero");
+            $fatal(1);
+        end
 
         check_output_memory();
 
@@ -790,8 +829,9 @@ module tb_flash_attn_top_e2e_smoke;
             $fatal(1);
         end
 
-        $display("tb_flash_attn_top_e2e_smoke PASS S=%0d D=%0d BK=%0d bitexact=%0d cycles=%0d wait_cycles=%0d",
-                 S_LEN, D_MODEL, BK, CHECK_BITEXACT, cycles_value, wait_cycles);
+        $display("tb_flash_attn_top_e2e_smoke PASS S=%0d D=%0d BK=%0d BQ=%0d bitexact=%0d cycles=%0d wait_cycles=%0d rd_bytes=%0d wr_bytes=%0d",
+                 S_LEN, D_MODEL, BK, BQ, CHECK_BITEXACT, cycles_value, wait_cycles,
+                 {rd_bytes_h, rd_bytes_l}, {wr_bytes_h, wr_bytes_l});
         $finish;
     end
 endmodule
