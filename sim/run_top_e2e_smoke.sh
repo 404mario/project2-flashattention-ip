@@ -53,6 +53,8 @@ check_output() {
         --scale-q8-8 "$scale" \
         --softmax-frac "$softmax_frac" \
         --check-fp32 \
+        --max-mae "${MAX_MAE:-0.03}" \
+        --max-maxe "${MAX_MAXE:-0.10}" \
         "$@"
 }
 

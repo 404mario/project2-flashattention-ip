@@ -16,11 +16,14 @@ module normalizer #(
     output logic out_valid,
     output logic signed [DATA_W-1:0] out
 );
-    localparam int LUT_BITS = 6;
-    localparam int NORM_W   = LUT_BITS + 1;
-    localparam int RECIP_W  = RECIP_FRAC + 1;
-    localparam int PROD_W   = ACC_W + RECIP_W;
-    localparam int SHIFT_W  = (PROD_W <= 1) ? 1 : $clog2(PROD_W + 1);
+    localparam int LUT_BITS    = 6;
+    localparam int INTERP_BITS = 8;
+    localparam int NORM_SHIFT  = LUT_BITS + INTERP_BITS;
+    localparam int NORM_W      = NORM_SHIFT + 1;
+    localparam int RECIP_W     = RECIP_FRAC + 1;
+    localparam int PROD_W      = ACC_W + RECIP_W;
+    localparam int INTERP_W    = RECIP_W + INTERP_BITS;
+    localparam int SHIFT_W     = (PROD_W <= 1) ? 1 : $clog2(PROD_W + 1);
 
     logic s1_valid_q;
     logic s1_negative_q;
@@ -29,6 +32,13 @@ module normalizer #(
     logic [ACC_W-1:0] s1_abs_acc_q;
     logic [RECIP_W-1:0] recip_comb;
     logic [LUT_BITS-1:0] lut_index_comb;
+    logic [INTERP_BITS-1:0] lut_frac_comb;
+    logic [RECIP_W-1:0] recip_base_comb;
+    logic [RECIP_W-1:0] recip_next_comb;
+    logic [RECIP_W-1:0] recip_diff_comb;
+    logic [INTERP_W-1:0] interp_product_comb;
+    logic [INTERP_W-1:0] interp_rounded_comb;
+    logic [RECIP_W-1:0] interp_delta_comb;
     logic [RECIP_W-1:0] s1_recip_q;
     logic [SHIFT_W-1:0] shift_comb;
     logic [SHIFT_W-1:0] s1_shift_q;
@@ -136,10 +146,10 @@ module normalizer #(
     );
         logic [L_W+LUT_BITS:0] shifted;
         begin
-            if (lead >= LUT_BITS[SHIFT_W-1:0]) begin
-                shifted = value >> (lead - LUT_BITS[SHIFT_W-1:0]);
+            if (lead >= NORM_SHIFT[SHIFT_W-1:0]) begin
+                shifted = value >> (lead - NORM_SHIFT[SHIFT_W-1:0]);
             end else begin
-                shifted = value << (LUT_BITS[SHIFT_W-1:0] - lead);
+                shifted = value << (NORM_SHIFT[SHIFT_W-1:0] - lead);
             end
             normalize_denom = shifted[NORM_W-1:0];
         end
@@ -195,8 +205,19 @@ module normalizer #(
 
         lead = leading_pos(denom);
         norm_value = normalize_denom(denom, lead);
-        lut_index_comb = norm_value;
-        recip_comb = recip_lut_value(lut_index_comb);
+        lut_index_comb = norm_value[NORM_SHIFT-1:INTERP_BITS];
+        lut_frac_comb = norm_value[INTERP_BITS-1:0];
+        recip_base_comb = recip_lut_value(lut_index_comb);
+        if (&lut_index_comb) begin
+            recip_next_comb = 21'd8192;
+        end else begin
+            recip_next_comb = recip_lut_value(lut_index_comb + 1'b1);
+        end
+        recip_diff_comb = recip_base_comb - recip_next_comb;
+        interp_product_comb = recip_diff_comb * lut_frac_comb;
+        interp_rounded_comb = interp_product_comb + (1 << (INTERP_BITS - 1));
+        interp_delta_comb = interp_rounded_comb >> INTERP_BITS;
+        recip_comb = recip_base_comb - interp_delta_comb;
         if (lead >= LUT_BITS[SHIFT_W-1:0]) begin
             shift_comb = RECIP_FRAC[SHIFT_W-1:0] + lead - LUT_BITS[SHIFT_W-1:0];
         end else begin

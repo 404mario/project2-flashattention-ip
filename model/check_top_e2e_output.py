@@ -43,7 +43,7 @@ RECIP_LUT_Q20 = np.array(
         10923, 10810, 10700, 10592, 10486, 10382, 10280, 10180,
         10082, 9986, 9892, 9800, 9709, 9620, 9533, 9447,
         9362, 9279, 9198, 9118, 9039, 8962, 8886, 8812,
-        8738, 8666, 8595, 8525, 8456, 8389, 8322, 8257,
+        8738, 8666, 8595, 8525, 8456, 8389, 8322, 8257, 8192,
     ],
     dtype=np.int64,
 )
@@ -140,16 +140,25 @@ def normalize_approx(acc, denom):
     if denom == 0:
         return 0
 
+    lut_bits = 6
+    interp_bits = 8
+    recip_frac = 20
     neg = acc < 0
     abs_acc = abs(int(acc))
     lead = int(denom).bit_length() - 1
-    if lead >= 6:
-        norm_value = int(denom) >> (lead - 6)
+    norm_shift = lut_bits + interp_bits
+    if lead >= norm_shift:
+        norm_value = int(denom) >> (lead - norm_shift)
     else:
-        norm_value = int(denom) << (6 - lead)
+        norm_value = int(denom) << (norm_shift - lead)
 
-    recip = int(RECIP_LUT_Q20[norm_value & 0x3F])
-    shift = 20 + lead - 6
+    lut_index = (norm_value >> interp_bits) & ((1 << lut_bits) - 1)
+    lut_frac = norm_value & ((1 << interp_bits) - 1)
+    recip_base = int(RECIP_LUT_Q20[lut_index])
+    recip_next = int(RECIP_LUT_Q20[lut_index + 1])
+    recip_delta = (((recip_base - recip_next) * lut_frac) + (1 << (interp_bits - 1))) >> interp_bits
+    recip = recip_base - recip_delta
+    shift = recip_frac + lead - lut_bits
     product = abs_acc * recip
     if shift <= 0:
         quotient_abs = product
@@ -275,7 +284,7 @@ def report(name, got, expected):
         f"got={int(got[worst])} hex={to_hex16(got[worst])} "
         f"expected={int(expected[worst])} hex={to_hex16(expected[worst])}"
     )
-    return max_int
+    return mae_int / 256.0, max_int / 256.0
 
 
 def main():
@@ -292,6 +301,8 @@ def main():
     parser.add_argument("--k-hex", help="Optional K input vector hex file")
     parser.add_argument("--v-hex", help="Optional V input vector hex file")
     parser.add_argument("--golden-hex", help="Optional supplied output golden hex file")
+    parser.add_argument("--max-mae", type=float, help="Fail if FP32 MAE exceeds this threshold")
+    parser.add_argument("--max-maxe", type=float, help="Fail if FP32 MaxE exceeds this threshold")
     args = parser.parse_args()
 
     hex_path = Path(args.hex)
@@ -308,8 +319,8 @@ def main():
         causal=causal,
         softmax_frac=args.softmax_frac,
     )
-    max_int = report("RTL output vs RTL fixed-point mirror", got, expected_rtl)
-    if max_int != 0:
+    _, max_err = report("RTL output vs RTL fixed-point mirror", got, expected_rtl)
+    if max_err != 0:
         raise SystemExit(1)
 
     if args.golden_hex:
@@ -318,7 +329,13 @@ def main():
 
     if args.check_fp32:
         expected_fp32 = fp32_expected(q, k, v, causal=causal)
-        report("RTL output vs FP32 softmax golden", got, expected_fp32)
+        mae, maxe = report("RTL output vs FP32 softmax golden", got, expected_fp32)
+        if args.max_mae is not None and mae > args.max_mae:
+            print(f"FAIL FP32 MAE {mae:.6f} exceeded threshold {args.max_mae:.6f}")
+            raise SystemExit(1)
+        if args.max_maxe is not None and maxe > args.max_maxe:
+            print(f"FAIL FP32 MaxE {maxe:.6f} exceeded threshold {args.max_maxe:.6f}")
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":
