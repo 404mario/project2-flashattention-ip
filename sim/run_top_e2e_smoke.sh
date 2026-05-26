@@ -122,7 +122,7 @@ if [[ "${RUN_VECTORS:-0}" == "1" ]]; then
         -P tb_flash_attn_top_e2e_smoke.CHECK_BITEXACT=0 \
         -P tb_flash_attn_top_e2e_smoke.TIMEOUT_CYCLES=2000000 \
         -P tb_flash_attn_top_e2e_smoke.MAX_CYCLES=300000 \
-        -P tb_flash_attn_top_e2e_smoke.PROGRESS_EVERY=50000 \
+        -P tb_flash_attn_top_e2e_smoke.PROGRESS_EVERY=10000 \
         -o "$VECTOR_OUT" \
         "${SOURCES[@]}"
 
@@ -157,7 +157,7 @@ if [[ "${RUN_FULL:-0}" == "1" ]]; then
         -P tb_flash_attn_top_e2e_smoke.CHECK_BITEXACT=0 \
         -P tb_flash_attn_top_e2e_smoke.TIMEOUT_CYCLES=2000000 \
         -P tb_flash_attn_top_e2e_smoke.MAX_CYCLES=300000 \
-        -P tb_flash_attn_top_e2e_smoke.PROGRESS_EVERY=50000 \
+        -P tb_flash_attn_top_e2e_smoke.PROGRESS_EVERY=10000 \
         -o "$FULL_OUT" \
         "${SOURCES[@]}"
 

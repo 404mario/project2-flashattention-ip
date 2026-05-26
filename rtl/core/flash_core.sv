@@ -5,7 +5,7 @@ module flash_core #(
     parameter int D_MODEL         = 64,
     parameter int BK              = 16,
     parameter int DATA_W          = 16,
-    parameter int ACC_W           = 48,
+    parameter int ACC_W           = 40,
     parameter int FRAC_W          = 8,
     parameter int BQ              = 1,
     parameter int USE_DOT_TREE    = 0,
@@ -71,6 +71,7 @@ module flash_core #(
         ST_DOT_START,
         ST_DOT_WAIT,
         ST_NORMALIZE,
+        ST_NORMALIZE_DRAIN,
         ST_EMIT_O,
         ST_STEP,
         ST_DONE,
@@ -90,8 +91,6 @@ module flash_core #(
     logic [D_IDX_W-1:0]  norm_index_q;
 
     logic signed [DATA_W-1:0] q_block [0:BQ_EFF-1][0:D_MODEL-1];
-    logic signed [DATA_W-1:0] k_tile_store [0:BK-1][0:D_MODEL-1];
-    logic signed [DATA_W-1:0] v_tile_store [0:BK-1][0:D_MODEL-1];
     logic signed [ACC_W-1:0]  acc_block [0:BQ_EFF-1][0:D_MODEL-1];
     logic signed [ACC_W-1:0]  m_block [0:BQ_EFF-1];
     logic [L_W-1:0]           l_block [0:BQ_EFF-1];
@@ -132,25 +131,14 @@ module flash_core #(
 
     logic signed [ACC_W-1:0] norm_acc;
     logic [L_W-1:0] norm_denom;
+    logic norm_in_valid;
+    logic norm_out_valid;
     logic signed [DATA_W-1:0] norm_out;
-    logic signed [DATA_W-1:0] normalized_data [0:D_MODEL-1];
+    logic [D_IDX_W-1:0] norm_write_index_q;
     logic signed [DATA_W-1:0] o_data_q [0:D_MODEL-1];
-
-    logic sched_start;
-    logic sched_step;
-    logic sched_valid;
-    logic sched_done;
-    logic [ROW_W-1:0] sched_row;
-    logic [ROW_W-1:0] sched_kv_start;
-    logic [LEN_W-1:0] sched_kv_len;
-    logic sched_last_tile;
-    logic sched_last_row;
-    logic q_row_valid;
-    logic tile_valid;
 
     int comb_d;
     int seq_d;
-    int seq_b;
     int seq_q;
     genvar o_gen;
 
@@ -249,8 +237,12 @@ module flash_core #(
         .L_W(L_W),
         .DATA_W(DATA_W)
     ) u_shared_normalizer (
+        .clk(clk),
+        .rst_n(rst_n),
+        .in_valid(norm_in_valid),
         .acc(norm_acc),
         .denom(norm_denom),
+        .out_valid(norm_out_valid),
         .out(norm_out)
     );
 
@@ -286,7 +278,9 @@ module flash_core #(
         kv_req_valid  = (state_q == ST_REQ_KV);
         kv_req_start  = kv_start_q;
         kv_req_len    = kv_len_q;
-        kv_data_ready = (state_q == ST_WAIT_KV);
+        kv_data_ready = (state_q == ST_ADVANCE_SCORE) &&
+                        !((key_offset_q + 1'b1) < kv_len_q) &&
+                        !((q_proc_index_q + 1'b1) < q_block_len_q);
 
         o_valid = (state_q == ST_EMIT_O);
         o_row   = q_block_start_q + emit_index_q;
@@ -298,26 +292,11 @@ module flash_core #(
         for (comb_d = 0; comb_d < D_MODEL; comb_d = comb_d + 1) begin
             acc_state_q[comb_d] = acc_block[q_proc_index_q][comb_d];
             o_data_flat[comb_d * DATA_W +: DATA_W] = o_data_q[comb_d];
-            normalized_data[comb_d] = '0;
         end
-        normalized_data[norm_index_q] = norm_out;
 
         norm_acc   = acc_block[emit_index_q][norm_index_q];
         norm_denom = l_block[emit_index_q];
-
-        sched_start     = start && (state_q == ST_IDLE);
-        sched_step      = (state_q == ST_ADVANCE_SCORE);
-        sched_valid     = (state_q != ST_IDLE) && (state_q != ST_DONE);
-        sched_done      = done;
-        sched_row       = current_q_row;
-        sched_kv_start  = kv_start_q;
-        sched_kv_len    = kv_len_q;
-        sched_last_tile = tile_last_for_block;
-        sched_last_row  = (current_q_row == (S_LEN - 1));
-        q_row_valid     = (state_q != ST_IDLE);
-        tile_valid      = (state_q != ST_REQ_KV) && (state_q != ST_WAIT_KV) &&
-                          (state_q != ST_REQ_Q) && (state_q != ST_WAIT_Q) &&
-                          (state_q != ST_IDLE);
+        norm_in_valid = (state_q == ST_NORMALIZE);
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -332,6 +311,7 @@ module flash_core #(
             kv_len_q        <= '0;
             key_offset_q    <= '0;
             norm_index_q    <= '0;
+            norm_write_index_q <= '0;
 
             for (seq_q = 0; seq_q < BQ_EFF; seq_q = seq_q + 1) begin
                 m_block[seq_q] <= '0;
@@ -349,13 +329,14 @@ module flash_core #(
                 o_data_q[seq_d]    <= '0;
             end
 
-            for (seq_b = 0; seq_b < BK; seq_b = seq_b + 1) begin
-                for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
-                    k_tile_store[seq_b][seq_d] <= '0;
-                    v_tile_store[seq_b][seq_d] <= '0;
+        end else begin
+            if (norm_out_valid) begin
+                o_data_q[norm_write_index_q] <= norm_out;
+                if (norm_write_index_q != D_MODEL - 1) begin
+                    norm_write_index_q <= norm_write_index_q + 1'b1;
                 end
             end
-        end else begin
+
             unique case (state_q)
                 ST_IDLE: begin
                     if (start) begin
@@ -368,6 +349,7 @@ module flash_core #(
                         kv_len_q        <= calc_kv_len('0);
                         key_offset_q    <= '0;
                         norm_index_q    <= '0;
+                        norm_write_index_q <= '0;
                         state_q         <= ST_REQ_Q;
                     end
                 end
@@ -407,13 +389,7 @@ module flash_core #(
                 end
 
                 ST_WAIT_KV: begin
-                    if (kv_data_valid && kv_data_ready) begin
-                        for (seq_b = 0; seq_b < BK; seq_b = seq_b + 1) begin
-                            for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
-                                k_tile_store[seq_b][seq_d] <= k_tile[seq_b][seq_d];
-                                v_tile_store[seq_b][seq_d] <= v_tile[seq_b][seq_d];
-                            end
-                        end
+                    if (kv_data_valid) begin
                         q_proc_index_q <= '0;
                         key_offset_q   <= '0;
                         state_q        <= ST_PREP_KEY;
@@ -426,8 +402,8 @@ module flash_core #(
                     end else begin
                         for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
                             q_work_data[seq_d] <= q_block[q_proc_index_q][seq_d];
-                            k_work_data[seq_d] <= k_tile_store[key_offset_q][seq_d];
-                            v_work_data[seq_d] <= v_tile_store[key_offset_q][seq_d];
+                            k_work_data[seq_d] <= k_tile[key_offset_q][seq_d];
+                            v_work_data[seq_d] <= v_tile[key_offset_q][seq_d];
                         end
                         state_q <= ST_DOT_START;
                     end
@@ -459,6 +435,7 @@ module flash_core #(
                     end else if (tile_last_for_block) begin
                         emit_index_q <= '0;
                         norm_index_q <= '0;
+                        norm_write_index_q <= '0;
                         state_q      <= ST_NORMALIZE;
                     end else begin
                         kv_start_q      <= next_kv_start_wide[ROW_W-1:0];
@@ -470,11 +447,16 @@ module flash_core #(
                 end
 
                 ST_NORMALIZE: begin
-                    o_data_q[norm_index_q] <= norm_out;
                     if (norm_index_q == D_MODEL - 1) begin
-                        state_q <= ST_EMIT_O;
+                        state_q <= ST_NORMALIZE_DRAIN;
                     end else begin
                         norm_index_q <= norm_index_q + 1'b1;
+                    end
+                end
+
+                ST_NORMALIZE_DRAIN: begin
+                    if (norm_out_valid && (norm_write_index_q == D_MODEL - 1)) begin
+                        state_q <= ST_EMIT_O;
                     end
                 end
 
@@ -483,6 +465,7 @@ module flash_core #(
                         if ((emit_index_q + 1'b1) < q_block_len_q) begin
                             emit_index_q <= emit_index_q + 1'b1;
                             norm_index_q <= '0;
+                            norm_write_index_q <= '0;
                             state_q      <= ST_NORMALIZE;
                         end else if (last_block) begin
                             state_q <= ST_DONE;
@@ -513,10 +496,4 @@ module flash_core #(
             endcase
         end
     end
-
-    logic unused_internal;
-    assign unused_internal = dot_busy ^ q_row_valid ^ tile_valid ^ sched_start ^
-                             sched_step ^ sched_valid ^ sched_done ^ sched_last_tile ^
-                             sched_last_row ^ sched_row[0] ^ sched_kv_start[0] ^
-                             sched_kv_len[0] ^ normalized_data[0][0];
 endmodule

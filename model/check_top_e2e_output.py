@@ -34,6 +34,20 @@ EXP_LUT_Q16 = np.array(
     dtype=np.int64,
 )
 
+RECIP_LUT_Q20 = np.array(
+    [
+        16384, 16132, 15888, 15650, 15420, 15197, 14980, 14769,
+        14564, 14364, 14170, 13981, 13797, 13618, 13443, 13273,
+        13107, 12945, 12788, 12633, 12483, 12336, 12193, 12053,
+        11916, 11782, 11651, 11523, 11398, 11275, 11155, 11038,
+        10923, 10810, 10700, 10592, 10486, 10382, 10280, 10180,
+        10082, 9986, 9892, 9800, 9709, 9620, 9533, 9447,
+        9362, 9279, 9198, 9118, 9039, 8962, 8886, 8812,
+        8738, 8666, 8595, 8525, 8456, 8389, 8322, 8257,
+    ],
+    dtype=np.int64,
+)
+
 
 def to_hex16(value):
     return f"{int(value) & 0xFFFF:04x}"
@@ -122,6 +136,30 @@ def saturate_i16(value):
     return min(max(int(value), -32768), 32767)
 
 
+def normalize_approx(acc, denom):
+    if denom == 0:
+        return 0
+
+    neg = acc < 0
+    abs_acc = abs(int(acc))
+    lead = int(denom).bit_length() - 1
+    if lead >= 6:
+        norm_value = int(denom) >> (lead - 6)
+    else:
+        norm_value = int(denom) << (6 - lead)
+
+    recip = int(RECIP_LUT_Q20[norm_value & 0x3F])
+    shift = 20 + lead - 6
+    product = abs_acc * recip
+    if shift <= 0:
+        quotient_abs = product
+    else:
+        quotient_abs = (product + (1 << (shift - 1))) >> shift
+
+    quotient = -quotient_abs if neg else quotient_abs
+    return saturate_i16(quotient)
+
+
 def build_inputs(s_len, d_model):
     q = np.zeros((s_len, d_model), dtype=np.int64)
     k = np.zeros((s_len, d_model), dtype=np.int64)
@@ -197,7 +235,7 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8):
                 acc = ((acc * old_scale) >> weight_frac) + (new_weight * v[key])
 
         for d in range(d_model):
-            out[row, d] = saturate_i16(trunc_div_signed(int(acc[d]), int(l_state)))
+            out[row, d] = normalize_approx(int(acc[d]), int(l_state))
 
     return out
 

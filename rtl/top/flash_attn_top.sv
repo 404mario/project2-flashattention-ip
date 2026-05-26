@@ -6,7 +6,7 @@ module flash_attn_top #(
     parameter int BK         = 16,
     parameter int DATA_W     = 16,
     parameter int FRAC_W     = 8,
-    parameter int ACC_W      = 48,
+    parameter int ACC_W      = 40,
     parameter int ADDR_W     = 64,
     parameter int AXI_DATA_W = 64,
     parameter int BQ         = 16,
