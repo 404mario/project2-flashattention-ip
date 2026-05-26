@@ -34,6 +34,20 @@ EXP_LUT_Q16 = np.array(
     dtype=np.int64,
 )
 
+RECIP_LUT_Q20 = np.array(
+    [
+        16384, 16132, 15888, 15650, 15420, 15197, 14980, 14769,
+        14564, 14364, 14170, 13981, 13797, 13618, 13443, 13273,
+        13107, 12945, 12788, 12633, 12483, 12336, 12193, 12053,
+        11916, 11782, 11651, 11523, 11398, 11275, 11155, 11038,
+        10923, 10810, 10700, 10592, 10486, 10382, 10280, 10180,
+        10082, 9986, 9892, 9800, 9709, 9620, 9533, 9447,
+        9362, 9279, 9198, 9118, 9039, 8962, 8886, 8812,
+        8738, 8666, 8595, 8525, 8456, 8389, 8322, 8257, 8192,
+    ],
+    dtype=np.int64,
+)
+
 
 def to_hex16(value):
     return f"{int(value) & 0xFFFF:04x}"
@@ -122,6 +136,39 @@ def saturate_i16(value):
     return min(max(int(value), -32768), 32767)
 
 
+def normalize_approx(acc, denom):
+    if denom == 0:
+        return 0
+
+    lut_bits = 6
+    interp_bits = 8
+    recip_frac = 20
+    neg = acc < 0
+    abs_acc = abs(int(acc))
+    lead = int(denom).bit_length() - 1
+    norm_shift = lut_bits + interp_bits
+    if lead >= norm_shift:
+        norm_value = int(denom) >> (lead - norm_shift)
+    else:
+        norm_value = int(denom) << (norm_shift - lead)
+
+    lut_index = (norm_value >> interp_bits) & ((1 << lut_bits) - 1)
+    lut_frac = norm_value & ((1 << interp_bits) - 1)
+    recip_base = int(RECIP_LUT_Q20[lut_index])
+    recip_next = int(RECIP_LUT_Q20[lut_index + 1])
+    recip_delta = (((recip_base - recip_next) * lut_frac) + (1 << (interp_bits - 1))) >> interp_bits
+    recip = recip_base - recip_delta
+    shift = recip_frac + lead - lut_bits
+    product = abs_acc * recip
+    if shift <= 0:
+        quotient_abs = product
+    else:
+        quotient_abs = (product + (1 << (shift - 1))) >> shift
+
+    quotient = -quotient_abs if neg else quotient_abs
+    return saturate_i16(quotient)
+
+
 def build_inputs(s_len, d_model):
     q = np.zeros((s_len, d_model), dtype=np.int64)
     k = np.zeros((s_len, d_model), dtype=np.int64)
@@ -197,7 +244,7 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8):
                 acc = ((acc * old_scale) >> weight_frac) + (new_weight * v[key])
 
         for d in range(d_model):
-            out[row, d] = saturate_i16(trunc_div_signed(int(acc[d]), int(l_state)))
+            out[row, d] = normalize_approx(int(acc[d]), int(l_state))
 
     return out
 
@@ -237,7 +284,7 @@ def report(name, got, expected):
         f"got={int(got[worst])} hex={to_hex16(got[worst])} "
         f"expected={int(expected[worst])} hex={to_hex16(expected[worst])}"
     )
-    return max_int
+    return mae_int / 256.0, max_int / 256.0
 
 
 def main():
@@ -254,6 +301,8 @@ def main():
     parser.add_argument("--k-hex", help="Optional K input vector hex file")
     parser.add_argument("--v-hex", help="Optional V input vector hex file")
     parser.add_argument("--golden-hex", help="Optional supplied output golden hex file")
+    parser.add_argument("--max-mae", type=float, help="Fail if FP32 MAE exceeds this threshold")
+    parser.add_argument("--max-maxe", type=float, help="Fail if FP32 MaxE exceeds this threshold")
     args = parser.parse_args()
 
     hex_path = Path(args.hex)
@@ -270,8 +319,8 @@ def main():
         causal=causal,
         softmax_frac=args.softmax_frac,
     )
-    max_int = report("RTL output vs RTL fixed-point mirror", got, expected_rtl)
-    if max_int != 0:
+    _, max_err = report("RTL output vs RTL fixed-point mirror", got, expected_rtl)
+    if max_err != 0:
         raise SystemExit(1)
 
     if args.golden_hex:
@@ -280,7 +329,13 @@ def main():
 
     if args.check_fp32:
         expected_fp32 = fp32_expected(q, k, v, causal=causal)
-        report("RTL output vs FP32 softmax golden", got, expected_fp32)
+        mae, maxe = report("RTL output vs FP32 softmax golden", got, expected_fp32)
+        if args.max_mae is not None and mae > args.max_mae:
+            print(f"FAIL FP32 MAE {mae:.6f} exceeded threshold {args.max_mae:.6f}")
+            raise SystemExit(1)
+        if args.max_maxe is not None and maxe > args.max_maxe:
+            print(f"FAIL FP32 MaxE {maxe:.6f} exceeded threshold {args.max_maxe:.6f}")
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

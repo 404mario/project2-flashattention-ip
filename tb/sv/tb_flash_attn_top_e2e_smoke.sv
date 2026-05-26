@@ -5,7 +5,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int D_MODEL        = 8;
     parameter int BK             = 4;
     parameter int DATA_W         = 16;
-    parameter int ACC_W          = 48;
+    parameter int ACC_W          = 40;
     parameter int FRAC_W         = 8;
     parameter int AXI_DATA_W     = 64;
     parameter int SCALE_Q8_8     = 91;
@@ -120,6 +120,7 @@ module tb_flash_attn_top_e2e_smoke;
     int row;
     int col;
     int changed_count;
+    int progress_pct;
     int use_vector_files;
     string out_hex_path;
     string q_hex_path;
@@ -236,7 +237,7 @@ module tb_flash_attn_top_e2e_smoke;
             end
             if (dut.u_flash_core.state_q == 4'd7 && dut.u_flash_core.dot_done) begin
                 $display("CORE dot row=%0d key=%0d score_valid=%0b dot=%0d scaled=%0d masked=%0d m=%0d l=%0d old_scale=%0d new_weight=%0d acc0_in=%0d acc0_next=%0d v0=%0d",
-                         dut.u_flash_core.sched_row,
+                         dut.u_flash_core.current_q_row,
                          dut.u_flash_core.current_key_index,
                          dut.u_flash_core.score_valid,
                          dut.u_flash_core.dot_value,
@@ -279,16 +280,16 @@ module tb_flash_attn_top_e2e_smoke;
                 $fflush();
             end
             if (dut.u_flash_core.state_q == 4'd8) begin
-                $display("CORE normalize row=%0d l=%0d acc0=%0d norm0=%0d acc1=%0d norm1=%0d",
-                         dut.u_flash_core.sched_row,
-                         dut.u_flash_core.l_state_q,
-                         dut.u_flash_core.acc_state_q[0],
-                         dut.u_flash_core.normalized_data[0],
-                         dut.u_flash_core.acc_state_q[1],
-                         dut.u_flash_core.normalized_data[1]);
+                $display("CORE normalize row=%0d idx=%0d denom=%0d acc=%0d norm=%0d valid=%0b",
+                         dut.u_flash_core.current_q_row,
+                         dut.u_flash_core.norm_index_q,
+                         dut.u_flash_core.norm_denom,
+                         dut.u_flash_core.norm_acc,
+                         dut.u_flash_core.norm_out,
+                         dut.u_flash_core.norm_out_valid);
                 $fflush();
             end
-            if (dut.u_flash_core.state_q == 4'd9) begin
+            if (dut.u_flash_core.state_q == 4'd10) begin
                 $display("CORE emit row=%0d o0=%0d o1=%0d flat=%0h",
                          dut.u_flash_core.o_row,
                          dut.u_flash_core.o_data_q[0],
@@ -865,8 +866,19 @@ module tb_flash_attn_top_e2e_smoke;
             end
             if ((PROGRESS_EVERY != 0) && ((wait_cycles % PROGRESS_EVERY) == 0)) begin
                 axil_read(REG_CYCLES, cycles_value);
-                $display("PROGRESS top e2e S=%0d D=%0d BK=%0d BQ=%0d wait_cycles=%0d status=%08h cycles=%0d",
-                         S_LEN, D_MODEL, BK, BQ, wait_cycles, status_value, cycles_value);
+                if (MAX_CYCLES != 0) begin
+                    progress_pct = (cycles_value * 100) / MAX_CYCLES;
+                end else begin
+                    progress_pct = (wait_cycles * 100) / TIMEOUT_CYCLES;
+                end
+                if (progress_pct > 100) begin
+                    progress_pct = 100;
+                end
+                $display("PROGRESS [%0d%%] top e2e S=%0d D=%0d BK=%0d BQ=%0d cycles=%0d/%0d wait_cycles=%0d/%0d status=%08h core_state=%0d q_block=%0d kv_start=%0d emit=%0d",
+                         progress_pct, S_LEN, D_MODEL, BK, BQ, cycles_value,
+                         MAX_CYCLES, wait_cycles, TIMEOUT_CYCLES, status_value,
+                         dut.u_flash_core.state_q, dut.u_flash_core.q_block_start_q,
+                         dut.u_flash_core.kv_start_q, dut.u_flash_core.emit_index_q);
                 $fflush();
             end
         end
