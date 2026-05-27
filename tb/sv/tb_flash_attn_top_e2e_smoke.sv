@@ -61,6 +61,8 @@ module tb_flash_attn_top_e2e_smoke;
     localparam logic [31:0] STATUS_DONE      = 32'h0000_0002;
     localparam logic [31:0] STATUS_ERROR     = 32'h0000_0004;
     localparam logic [31:0] CFG_CAUSAL_EN    = 32'h0000_0001;
+    localparam int QK_PROC_SHIFT = FRAC_W - 4;
+    localparam int V_PROC_SHIFT  = FRAC_W - 5;
 
     logic clk;
     logic rst_n;
@@ -306,19 +308,19 @@ module tb_flash_attn_top_e2e_smoke;
 
     function automatic int signed q_value(input int in_row, input int in_col);
         begin
-            q_value = ((((in_row * 3 + in_col * 5 + 7) % 17) - 8) <<< 4);
+            q_value = ((((in_row * 3 + in_col * 5 + 7) % 17) - 8) <<< QK_PROC_SHIFT);
         end
     endfunction
 
     function automatic int signed k_value(input int key_row, input int in_col);
         begin
-            k_value = ((((key_row * 5 + in_col * 7 + 11) % 19) - 9) <<< 4);
+            k_value = ((((key_row * 5 + in_col * 7 + 11) % 19) - 9) <<< QK_PROC_SHIFT);
         end
     endfunction
 
     function automatic int signed v_value(input int key_row, input int in_col);
         begin
-            v_value = ((((key_row * 7 + in_col * 3 + 5) % 23) - 11) <<< 3);
+            v_value = ((((key_row * 7 + in_col * 3 + 5) % 23) - 11) <<< V_PROC_SHIFT);
         end
     endfunction
 

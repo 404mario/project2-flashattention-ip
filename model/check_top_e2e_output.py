@@ -169,15 +169,17 @@ def normalize_approx(acc, denom):
     return saturate_i16(quotient)
 
 
-def build_inputs(s_len, d_model):
+def build_inputs(s_len, d_model, frac_w=8):
     q = np.zeros((s_len, d_model), dtype=np.int64)
     k = np.zeros((s_len, d_model), dtype=np.int64)
     v = np.zeros((s_len, d_model), dtype=np.int64)
+    qk_shift = frac_w - 4
+    v_shift = frac_w - 5
     for r in range(s_len):
         for c in range(d_model):
-            q[r, c] = q_value(r, c)
-            k[r, c] = k_value(r, c)
-            v[r, c] = v_value(r, c)
+            q[r, c] = (((r * 3 + c * 5 + 7) % 17) - 8) << qk_shift
+            k[r, c] = (((r * 5 + c * 7 + 11) % 19) - 9) << qk_shift
+            v[r, c] = (((r * 7 + c * 3 + 5) % 23) - 11) << v_shift
     return q, k, v
 
 
@@ -192,15 +194,15 @@ def load_inputs(args):
         v = read_hex16_matrix(Path(args.v_hex), args.s_len, args.d_model)
         return q, k, v
 
-    return build_inputs(args.s_len, args.d_model)
+    return build_inputs(args.s_len, args.d_model, args.frac_w)
 
 
-def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8, valid_len=None):
+def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8, valid_len=None, frac_w=8):
     s_len, d_model = q.shape
     out = np.zeros((s_len, d_model), dtype=np.int64)
     weight_frac = softmax_frac
     weight_one = 1 << weight_frac
-    scale_shift = (3 * 8) - softmax_frac
+    scale_shift = (3 * frac_w) - softmax_frac
     valid_len = s_len if valid_len is None else max(0, min(int(valid_len), s_len))
 
     for row in range(s_len):
@@ -221,8 +223,8 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8, valid_len
                     continue
 
                 dot = int(np.dot(q[row], k[key]))
-                if softmax_frac == 8:
-                    score = ((dot >> 8) * int(scale_q8_8)) >> 8
+                if softmax_frac == frac_w:
+                    score = ((dot >> frac_w) * int(scale_q8_8)) >> frac_w
                 else:
                     score = (dot * int(scale_q8_8)) >> scale_shift
 
@@ -255,10 +257,11 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8, valid_len
     return out
 
 
-def fp32_expected(q, k, v, causal=True, valid_len=None):
-    qf = q.astype(np.float64) / 256.0
-    kf = k.astype(np.float64) / 256.0
-    vf = v.astype(np.float64) / 256.0
+def fp32_expected(q, k, v, causal=True, valid_len=None, frac_w=8):
+    scale = float(1 << frac_w)
+    qf = q.astype(np.float64) / scale
+    kf = k.astype(np.float64) / scale
+    vf = v.astype(np.float64) / scale
     s_len, d_model = q.shape
     valid_len = s_len if valid_len is None else max(0, min(int(valid_len), s_len))
     scores = (qf @ kf.T) / math.sqrt(float(d_model))
@@ -274,11 +277,11 @@ def fp32_expected(q, k, v, causal=True, valid_len=None):
     if valid_len < s_len:
         probs[valid_len:, :] = 0.0
     outf = probs @ vf
-    out_int = np.rint(outf * 256.0).astype(np.int64)
+    out_int = np.rint(outf * scale).astype(np.int64)
     return np.clip(out_int, -32768, 32767)
 
 
-def report(name, got, expected):
+def report(name, got, expected, frac_w=8):
     diff = got - expected
     abs_diff = np.abs(diff)
     worst_flat = int(np.argmax(abs_diff))
@@ -288,15 +291,16 @@ def report(name, got, expected):
     print(f"{name}:")
     print(f"  mean_abs_int = {mae_int:.6f}")
     print(f"  max_abs_int  = {max_int}")
-    print(f"  MAE          = {mae_int / 256.0:.6f}")
-    print(f"  MaxE         = {max_int / 256.0:.6f}")
+    scale = float(1 << frac_w)
+    print(f"  MAE          = {mae_int / scale:.6f}")
+    print(f"  MaxE         = {max_int / scale:.6f}")
     print(
         "  worst_idx    = "
         f"({int(worst[0])}, {int(worst[1])}) "
         f"got={int(got[worst])} hex={to_hex16(got[worst])} "
         f"expected={int(expected[worst])} hex={to_hex16(expected[worst])}"
     )
-    return mae_int / 256.0, max_int / 256.0
+    return mae_int / scale, max_int / scale
 
 
 def main():
@@ -306,6 +310,7 @@ def main():
     parser.add_argument("--d-model", type=int, required=True)
     parser.add_argument("--bk", type=int, required=True)
     parser.add_argument("--scale-q8-8", type=int, required=True)
+    parser.add_argument("--frac-w", type=int, default=8)
     parser.add_argument("--softmax-frac", type=int, default=8)
     parser.add_argument("--valid-len", type=int)
     parser.add_argument("--noncausal", action="store_true")
@@ -332,18 +337,19 @@ def main():
         causal=causal,
         softmax_frac=args.softmax_frac,
         valid_len=args.valid_len,
+        frac_w=args.frac_w,
     )
-    _, max_err = report("RTL output vs RTL fixed-point mirror", got, expected_rtl)
+    _, max_err = report("RTL output vs RTL fixed-point mirror", got, expected_rtl, frac_w=args.frac_w)
     if max_err != 0:
         raise SystemExit(1)
 
     if args.golden_hex:
         supplied_golden = read_hex16_matrix(Path(args.golden_hex), args.s_len, args.d_model)
-        report("RTL output vs supplied golden_o.hex", got, supplied_golden)
+        report("RTL output vs supplied golden_o.hex", got, supplied_golden, frac_w=args.frac_w)
 
     if args.check_fp32:
-        expected_fp32 = fp32_expected(q, k, v, causal=causal, valid_len=args.valid_len)
-        mae, maxe = report("RTL output vs FP32 softmax golden", got, expected_fp32)
+        expected_fp32 = fp32_expected(q, k, v, causal=causal, valid_len=args.valid_len, frac_w=args.frac_w)
+        mae, maxe = report("RTL output vs FP32 softmax golden", got, expected_fp32, frac_w=args.frac_w)
         if args.max_mae is not None and mae > args.max_mae:
             print(f"FAIL FP32 MAE {mae:.6f} exceeded threshold {args.max_mae:.6f}")
             raise SystemExit(1)
