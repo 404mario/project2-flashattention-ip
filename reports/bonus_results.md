@@ -26,7 +26,8 @@ Acceptance thresholds:
 - Bonus 3, configurable sequence length: compile-time `S_LEN` is verified through independent top E2E smoke cases with S=64 and S=128.
 - Bonus 4, padding mask: `VALID_LEN <= S_LEN` masks invalid K/V tokens and zeroes invalid output rows. Default `VALID_LEN=S_LEN` preserves baseline behavior.
 - Bonus 5, additional fixed-point formats: Q6.10 and Q4.12 smoke regressions reuse the same AXI-Lite/DMA flow through parameterized testbench/checker paths. They do not change default Q8.8 baseline behavior.
-- Bonus 9, lightweight task queue: `TASK_COUNT` and `TASK_STRIDE` registers chain multiple independent tensor regions through the same top-level DMA/control path. Default `TASK_COUNT=1` should preserve the single-task baseline path.
+- Bonus 8, AXI4-Stream interface: `flash_attn_axis_top` wraps the shared `flash_core` with Q/KV input streams and O output stream.
+- Bonus 9, lightweight task queue: `TASK_COUNT` and `TASK_STRIDE` registers chain multiple independent tensor regions through the same top-level DMA/control path. Default `TASK_COUNT=1` preserves the single-task baseline path.
 
 ## Top Smoke Results
 
@@ -41,7 +42,7 @@ Latest local result after porting Bonus 4, Bonus 5, and Bonus 9:
 
 | Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | FP32 MAE | FP32 MaxE |
 |---|---:|---|---|---:|---:|---:|---:|---:|
-| AXI-Lite control regression | register-only | START, SOFT_RESET, IRQ_EN, DONE W1C, VALID_LEN | PASS | n/a | n/a | n/a | n/a | n/a |
+| AXI-Lite control regression | register-only | START, SOFT_RESET, IRQ_EN, DONE W1C, VALID_LEN, TASK_COUNT, TASK_STRIDE | PASS | n/a | n/a | n/a | n/a | n/a |
 | Q8.8 small top E2E | S=8,D=8,BK=4,BQ=16 | VALID_LEN=8 | PASS | 456 | 384 | 128 | 0.000183 | 0.003906 |
 | Padding mask top E2E | S=16,D=8,BK=4,BQ=4 | VALID_LEN=5 | PASS | 827 | 1152 | 256 | 0.000092 | 0.003906 |
 | Q6.10 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=10, VALID_LEN=16 | PASS | 1388 | 1536 | 256 | 0.000046 | 0.000977 |
@@ -84,3 +85,20 @@ Latest local result after porting Bonus 9:
 
 The single-task default path is still covered by `run_top_e2e_smoke.sh`, where Q8.8
 `S=8` remains 456 cycles and `S=32` remains 4780 cycles.
+
+## AXI4-Stream Results
+
+Command:
+
+```bash
+bash ./sim/run_bonus_axis_stream_smoke.sh
+```
+
+Latest local result after porting Bonus 8:
+
+| Case | Shape | Config | Result | Wait cycles | FP32 MAE | FP32 MaxE |
+|---|---:|---|---|---:|---:|---:|
+| AXI4-Stream smoke | S=8,D=8,BK=4,BQ=4 | Q stream, KV stream, O stream | PASS | 587 | 0.000183 | 0.003906 |
+
+This wrapper is an independent top and does not change the default AXI-Lite + AXI master
+baseline top.

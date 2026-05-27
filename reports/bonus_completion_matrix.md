@@ -17,7 +17,7 @@ each claim must be ported and rerun here before final submission.
 | 5 | Other fixed-point formats | Ported | Q6.10/Q4.12 top E2E smoke with checker support. |
 | 6 | Dropout training mode | Pending port | Deterministic seed, mask evidence, and dropout golden comparison. |
 | 7 | INT8/FP8 lower precision | Pending design | Low-precision datapath or block-scaling evidence and error comparison. |
-| 8 | AXI4-Stream interface | Pending port | Stream wrapper smoke and full-size random-vector verification. |
+| 8 | AXI4-Stream interface | Ported | Stream wrapper smoke plus RTL-vs-mirror and FP32 checker evidence. |
 | 9 | DMA/task queue | Ported | `TASK_COUNT=2` smoke verifies chained START/DONE flow and per-task output writes. |
 | 10 | Other optimization | Not claimed | Only claim if a measured performance/power/area improvement is documented. |
 
@@ -40,6 +40,8 @@ The integrated bonus branch must keep this path available and rerunnable.
 | Evidence | Location |
 |---|---|
 | Bonus result summary | `reports/bonus_results.md` |
+| AXI4-Stream README | `README_bonus_axi_stream.md` |
+| AXI4-Stream wrapper and testbench | `rtl/top/flash_attn_axis_top.sv`, `tb/sv/tb_flash_attn_axis_top_smoke.sv` |
 | Padding mask RTL control register | `rtl/axi/axi_lite_regs.sv`, register `0x54 VALID_LEN` |
 | Task queue control registers | `rtl/axi/axi_lite_regs.sv`, registers `0x58 TASK_COUNT` and `0x5c TASK_STRIDE` |
 | Padding mask and task queue top/core connection | `rtl/top/flash_attn_top.sv`, `rtl/core/flash_core.sv` |
@@ -47,6 +49,7 @@ The integrated bonus branch must keep this path available and rerunnable.
 | Top E2E smoke including padding, Q6.10, Q4.12 | `sim/run_top_e2e_smoke.sh` |
 | Bonus configurable S smoke | `sim/run_bonus_sequence_smoke.sh` |
 | Bonus task queue smoke | `sim/run_bonus_task_queue_smoke.sh` |
+| Bonus AXI4-Stream smoke | `sim/run_bonus_axis_stream_smoke.sh` |
 | Configurable fixed-point checker | `model/check_top_e2e_output.py` |
 | Parametric top E2E testbench | `tb/sv/tb_flash_attn_top_e2e_smoke.sv` |
 
@@ -56,14 +59,9 @@ Recent local checks:
 ./sim/run_top_compile.sh
 ./sim/run_top_e2e_smoke.sh
 ./sim/run_bonus_sequence_smoke.sh
-```
-
-These passed after porting Bonus 3, Bonus 4, Bonus 5, and Bonus 9. Default Q8.8 cycles
-remained `S=8 -> 456` and `S=32 -> 4780` after task queue was added.
-
-```bash
 ./sim/run_bonus_task_queue_smoke.sh
+./sim/run_bonus_axis_stream_smoke.sh
 ```
 
-Passed with `TASK_COUNT=2`, `S=8`, `D=8`, `cycles=934`, `RD_BYTES=1024`, and
-`WR_BYTES=256`.
+These passed after porting Bonus 3, Bonus 4, Bonus 5, Bonus 8, and Bonus 9. Default
+Q8.8 cycles remained `S=8 -> 456` and `S=32 -> 4780` after task queue was added.
