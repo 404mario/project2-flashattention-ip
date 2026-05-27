@@ -28,18 +28,25 @@ SOURCES=(
 
 OUT="$BUILD/tb_flash_attn_top_e2e_task_queue.vvp"
 HEX="$BUILD/tb_flash_attn_top_e2e_task_queue_o.hex"
+S_LEN=8
+D_MODEL=8
+BK=4
+BQ=4
+TASK_COUNT=2
+TASK_STRIDE_BYTES=$((S_LEN * D_MODEL * 2))
+ELEMS=$((S_LEN * D_MODEL))
 
 iverilog -g2012 -Wall \
     -I "$TB_INCLUDE" \
     -s tb_flash_attn_top_e2e_smoke \
-    -P tb_flash_attn_top_e2e_smoke.S_LEN=8 \
-    -P tb_flash_attn_top_e2e_smoke.D_MODEL=8 \
-    -P tb_flash_attn_top_e2e_smoke.BK=4 \
-    -P tb_flash_attn_top_e2e_smoke.BQ=4 \
+    -P tb_flash_attn_top_e2e_smoke.S_LEN="$S_LEN" \
+    -P tb_flash_attn_top_e2e_smoke.D_MODEL="$D_MODEL" \
+    -P tb_flash_attn_top_e2e_smoke.BK="$BK" \
+    -P tb_flash_attn_top_e2e_smoke.BQ="$BQ" \
     -P tb_flash_attn_top_e2e_smoke.SOFTMAX_FRAC=16 \
     -P tb_flash_attn_top_e2e_smoke.SCALE_Q8_8=91 \
-    -P tb_flash_attn_top_e2e_smoke.TASK_COUNT=2 \
-    -P tb_flash_attn_top_e2e_smoke.TASK_STRIDE_BYTES=128 \
+    -P tb_flash_attn_top_e2e_smoke.TASK_COUNT="$TASK_COUNT" \
+    -P tb_flash_attn_top_e2e_smoke.TASK_STRIDE_BYTES="$TASK_STRIDE_BYTES" \
     -P tb_flash_attn_top_e2e_smoke.CHECK_BITEXACT=0 \
     -P tb_flash_attn_top_e2e_smoke.TIMEOUT_CYCLES=500000 \
     -o "$OUT" \
@@ -50,5 +57,20 @@ if grep -qE "FAIL|FATAL" "${OUT%.vvp}.log"; then
     echo "ERROR: task queue smoke reported FAIL/FATAL" >&2
     exit 1
 fi
+
+for ((task = 0; task < TASK_COUNT; task++)); do
+    python "$ROOT/model/check_top_e2e_output.py" \
+        --hex "$HEX" \
+        --hex-offset "$((task * ELEMS))" \
+        --s-len "$S_LEN" \
+        --d-model "$D_MODEL" \
+        --bk "$BK" \
+        --scale-q8-8 91 \
+        --frac-w 8 \
+        --softmax-frac 16 \
+        --valid-len "$S_LEN" \
+        --task-index "$task" \
+        --check-fp32
+done
 
 echo "Bonus task queue smoke passed."

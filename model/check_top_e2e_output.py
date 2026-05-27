@@ -53,7 +53,7 @@ def to_hex16(value):
     return f"{int(value) & 0xFFFF:04x}"
 
 
-def read_hex16_matrix(path, rows, cols):
+def read_hex16_matrix(path, rows, cols, offset_values=0):
     values = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -66,10 +66,14 @@ def read_hex16_matrix(path, rows, cols):
             values.append(raw)
 
     expected = rows * cols
-    if len(values) != expected:
-        raise ValueError(f"{path}: got {len(values)} values, expected {expected}")
+    offset_values = int(offset_values)
+    end = offset_values + expected
+    if offset_values < 0:
+        raise ValueError(f"{path}: offset must be non-negative")
+    if len(values) < end:
+        raise ValueError(f"{path}: got {len(values)} values, need {end} for offset {offset_values}")
 
-    return np.asarray(values, dtype=np.int64).reshape(rows, cols)
+    return np.asarray(values[offset_values:end], dtype=np.int64).reshape(rows, cols)
 
 
 def q_value(row, col):
@@ -169,17 +173,22 @@ def normalize_approx(acc, denom):
     return saturate_i16(quotient)
 
 
-def build_inputs(s_len, d_model, frac_w=8):
+def build_inputs(s_len, d_model, frac_w=8, task_index=0, head_index=0):
     q = np.zeros((s_len, d_model), dtype=np.int64)
     k = np.zeros((s_len, d_model), dtype=np.int64)
     v = np.zeros((s_len, d_model), dtype=np.int64)
     qk_shift = frac_w - 4
     v_shift = frac_w - 5
+    q_head_shift = frac_w - 7 if frac_w > 7 else 0
+    kv_head_shift = frac_w - 8 if frac_w > 8 else 0
     for r in range(s_len):
         for c in range(d_model):
-            q[r, c] = (((r * 3 + c * 5 + 7) % 17) - 8) << qk_shift
-            k[r, c] = (((r * 5 + c * 7 + 11) % 19) - 9) << qk_shift
-            v[r, c] = (((r * 7 + c * 3 + 5) % 23) - 11) << v_shift
+            q_base = (((r * 3 + c * 5 + 7) % 17) - 8) << qk_shift
+            k_base = (((r * 5 + c * 7 + 11) % 19) - 9) << qk_shift
+            v_base = (((r * 7 + c * 3 + 5) % 23) - 11) << v_shift
+            q[r, c] = q_base + ((int(head_index) - int(task_index)) << q_head_shift)
+            k[r, c] = k_base + ((int(head_index) + int(task_index)) << kv_head_shift)
+            v[r, c] = v_base + ((int(head_index) * 3 + int(task_index)) << kv_head_shift)
     return q, k, v
 
 
@@ -194,7 +203,7 @@ def load_inputs(args):
         v = read_hex16_matrix(Path(args.v_hex), args.s_len, args.d_model)
         return q, k, v
 
-    return build_inputs(args.s_len, args.d_model, args.frac_w)
+    return build_inputs(args.s_len, args.d_model, args.frac_w, args.task_index, args.head_index)
 
 
 def dropout_rand16(row, key, seed):
@@ -391,6 +400,9 @@ def main():
     parser.add_argument("--frac-w", type=int, default=8)
     parser.add_argument("--softmax-frac", type=int, default=8)
     parser.add_argument("--valid-len", type=int)
+    parser.add_argument("--hex-offset", type=int, default=0, help="Number of hex values to skip before reading output")
+    parser.add_argument("--task-index", type=int, default=0, help="Synthetic input task index for queued/multi-head checks")
+    parser.add_argument("--head-index", type=int, default=0, help="Synthetic input head index for multi-head checks")
     parser.add_argument("--noncausal", action="store_true")
     parser.add_argument("--check-fp32", action="store_true")
     parser.add_argument("--q-hex", help="Optional Q input vector hex file")
@@ -406,7 +418,7 @@ def main():
     args = parser.parse_args()
 
     hex_path = Path(args.hex)
-    got = read_hex16_matrix(hex_path, args.s_len, args.d_model)
+    got = read_hex16_matrix(hex_path, args.s_len, args.d_model, args.hex_offset)
     q, k, v = load_inputs(args)
     causal = not args.noncausal
 

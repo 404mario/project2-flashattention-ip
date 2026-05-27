@@ -91,6 +91,8 @@ module flash_attn_top #(
     logic [15:0] dropout_threshold;
     logic [15:0] dropout_seed;
     logic [15:0] dropout_scale_q8_8;
+    logic [31:0] head_count;
+    logic [31:0] head_stride_bytes;
     logic [31:0] cycle_count_q;
     logic [63:0] rd_bytes_count_q;
     logic [63:0] wr_bytes_count_q;
@@ -159,8 +161,11 @@ module flash_attn_top #(
     logic task_continue_pulse_q;
     logic task_start_pulse;
     logic [31:0] task_index_q;
+    logic [31:0] head_index_q;
     logic [31:0] task_count_eff;
+    logic [31:0] head_count_eff;
     logic [63:0] task_offset_q;
+    logic [63:0] head_offset_q;
     logic [63:0] q_base_eff;
     logic [63:0] k_base_eff;
     logic [63:0] v_base_eff;
@@ -179,14 +184,16 @@ module flash_attn_top #(
     assign overall_busy       = run_active_q || core_busy || dma_busy || rd_busy || wr_busy;
     assign current_task_done_pulse = run_active_q && core_done_seen_q && !dma_busy && !rd_busy && !wr_busy;
     assign last_task_done_pulse = current_task_done_pulse &&
+                                  ((head_index_q + 32'd1) >= head_count_eff) &&
                                   ((task_index_q + 32'd1) >= task_count_eff);
     assign overall_done_pulse = last_task_done_pulse;
     assign overall_error      = core_error || dma_error || rd_error || wr_error;
     assign task_count_eff     = (task_count == 32'd0) ? 32'd1 : task_count;
-    assign q_base_eff         = q_base + task_offset_q;
-    assign k_base_eff         = k_base + task_offset_q;
-    assign v_base_eff         = v_base + task_offset_q;
-    assign o_base_eff         = o_base + task_offset_q;
+    assign head_count_eff     = (head_count == 32'd0) ? 32'd1 : head_count;
+    assign q_base_eff         = q_base + task_offset_q + head_offset_q;
+    assign k_base_eff         = k_base + task_offset_q + head_offset_q;
+    assign v_base_eff         = v_base + task_offset_q + head_offset_q;
+    assign o_base_eff         = o_base + task_offset_q + head_offset_q;
     assign task_start_pulse   = start_pulse || task_continue_pulse_q;
 
     always_comb begin
@@ -210,7 +217,9 @@ module flash_attn_top #(
             core_done_seen_q <= 1'b0;
             task_continue_pulse_q <= 1'b0;
             task_index_q     <= 32'd0;
+            head_index_q     <= 32'd0;
             task_offset_q    <= 64'd0;
+            head_offset_q    <= 64'd0;
             cycle_count_q    <= 32'd0;
             rd_bytes_count_q <= 64'd0;
             wr_bytes_count_q <= 64'd0;
@@ -219,7 +228,9 @@ module flash_attn_top #(
             core_done_seen_q <= 1'b0;
             task_continue_pulse_q <= 1'b0;
             task_index_q     <= 32'd0;
+            head_index_q     <= 32'd0;
             task_offset_q    <= 64'd0;
+            head_offset_q    <= 64'd0;
             cycle_count_q    <= 32'd0;
             rd_bytes_count_q <= 64'd0;
             wr_bytes_count_q <= 64'd0;
@@ -230,7 +241,9 @@ module flash_attn_top #(
                 run_active_q     <= 1'b1;
                 core_done_seen_q <= 1'b0;
                 task_index_q     <= 32'd0;
+                head_index_q     <= 32'd0;
                 task_offset_q    <= 64'd0;
+                head_offset_q    <= 64'd0;
                 cycle_count_q    <= 32'd0;
                 rd_bytes_count_q <= 64'd0;
                 wr_bytes_count_q <= 64'd0;
@@ -239,9 +252,15 @@ module flash_attn_top #(
                     core_done_seen_q <= 1'b0;
                     if (last_task_done_pulse) begin
                         run_active_q <= 1'b0;
+                    end else if ((head_index_q + 32'd1) < head_count_eff) begin
+                        head_index_q <= head_index_q + 32'd1;
+                        head_offset_q <= head_offset_q + {32'd0, head_stride_bytes};
+                        task_continue_pulse_q <= 1'b1;
                     end else begin
                         task_index_q <= task_index_q + 32'd1;
                         task_offset_q <= task_offset_q + {32'd0, task_stride_bytes};
+                        head_index_q <= 32'd0;
+                        head_offset_q <= 64'd0;
                         task_continue_pulse_q <= 1'b1;
                     end
                 end
@@ -312,6 +331,8 @@ module flash_attn_top #(
         .dropout_threshold(dropout_threshold),
         .dropout_seed(dropout_seed),
         .dropout_scale_q8_8(dropout_scale_q8_8),
+        .head_count(head_count),
+        .head_stride_bytes(head_stride_bytes),
         .busy(overall_busy),
         .done(overall_done_pulse),
         .error(overall_error),

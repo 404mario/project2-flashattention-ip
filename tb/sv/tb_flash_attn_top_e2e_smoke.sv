@@ -19,6 +19,8 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int VALID_LEN       = S_LEN;
     parameter int TASK_COUNT      = 1;
     parameter int TASK_STRIDE_BYTES = S_LEN * D_MODEL * 2;
+    parameter int HEAD_COUNT      = 1;
+    parameter int HEAD_STRIDE_BYTES = S_LEN * D_MODEL * 2;
     parameter int DROPOUT_EN      = 0;
     parameter int DROPOUT_THRESHOLD = 0;
     parameter int DROPOUT_SEED    = 16'hace1;
@@ -32,12 +34,16 @@ module tb_flash_attn_top_e2e_smoke;
     localparam int STRIDE_BYTES   = D_MODEL * 2;
     localparam int NUM_ELEMS      = S_LEN * D_MODEL;
     localparam int TENSOR_BYTES   = S_LEN * STRIDE_BYTES;
-    localparam int TOTAL_O_ELEMS  = NUM_ELEMS * TASK_COUNT;
+    localparam int TASK_REGION_BYTES =
+        ((TASK_COUNT - 1) * TASK_STRIDE_BYTES) +
+        ((HEAD_COUNT - 1) * HEAD_STRIDE_BYTES) +
+        TENSOR_BYTES;
+    localparam int TOTAL_O_ELEMS  = NUM_ELEMS * TASK_COUNT * HEAD_COUNT;
     localparam int REGION_GAP     = 4096;
     localparam int unsigned Q_BASE = 32'h0000_0000;
-    localparam int unsigned K_BASE = Q_BASE + TENSOR_BYTES + REGION_GAP;
-    localparam int unsigned V_BASE = K_BASE + TENSOR_BYTES + REGION_GAP;
-    localparam int unsigned O_BASE = V_BASE + TENSOR_BYTES + REGION_GAP;
+    localparam int unsigned K_BASE = Q_BASE + TASK_REGION_BYTES + REGION_GAP;
+    localparam int unsigned V_BASE = K_BASE + TASK_REGION_BYTES + REGION_GAP;
+    localparam int unsigned O_BASE = V_BASE + TASK_REGION_BYTES + REGION_GAP;
     localparam int O_INIT_PATTERN = 16'h5a5a;
     localparam int WEIGHT_FRAC    = 8;
     localparam int WEIGHT_ONE     = 1 << WEIGHT_FRAC;
@@ -67,6 +73,8 @@ module tb_flash_attn_top_e2e_smoke;
     localparam logic [31:0] REG_DROPOUT_CFG  = 32'h60;
     localparam logic [31:0] REG_DROPOUT_SEED = 32'h64;
     localparam logic [31:0] REG_DROPOUT_SCALE = 32'h68;
+    localparam logic [31:0] REG_HEAD_COUNT    = 32'h6c;
+    localparam logic [31:0] REG_HEAD_STRIDE   = 32'h70;
 
     localparam logic [31:0] CTRL_START       = 32'h0000_0001;
     localparam logic [31:0] STATUS_BUSY      = 32'h0000_0001;
@@ -336,32 +344,32 @@ module tb_flash_attn_top_e2e_smoke;
         end
     endfunction
 
-    function automatic int signed q_data_value(input int in_row, input int in_col);
+    function automatic int signed q_data_value(input int in_row, input int in_col, input int in_task, input int in_head);
         begin
             if (use_vector_files != 0) begin
                 q_data_value = $signed(q_vec_mem[in_row * D_MODEL + in_col]);
             end else begin
-                q_data_value = q_value(in_row, in_col);
+                q_data_value = q_value(in_row, in_col) + ((in_head - in_task) <<< (FRAC_W > 7 ? FRAC_W - 7 : 0));
             end
         end
     endfunction
 
-    function automatic int signed k_data_value(input int key_row, input int in_col);
+    function automatic int signed k_data_value(input int key_row, input int in_col, input int in_task, input int in_head);
         begin
             if (use_vector_files != 0) begin
                 k_data_value = $signed(k_vec_mem[key_row * D_MODEL + in_col]);
             end else begin
-                k_data_value = k_value(key_row, in_col);
+                k_data_value = k_value(key_row, in_col) + ((in_head + in_task) <<< (FRAC_W > 8 ? FRAC_W - 8 : 0));
             end
         end
     endfunction
 
-    function automatic int signed v_data_value(input int key_row, input int in_col);
+    function automatic int signed v_data_value(input int key_row, input int in_col, input int in_task, input int in_head);
         begin
             if (use_vector_files != 0) begin
                 v_data_value = $signed(v_vec_mem[key_row * D_MODEL + in_col]);
             end else begin
-                v_data_value = v_value(key_row, in_col);
+                v_data_value = v_value(key_row, in_col) + ((in_head * 3 + in_task) <<< (FRAC_W > 8 ? FRAC_W - 8 : 0));
             end
         end
     endfunction
@@ -380,18 +388,24 @@ module tb_flash_attn_top_e2e_smoke;
         end
     endfunction
 
-    function automatic longint signed scaled_score(input int in_row, input int key);
+    function automatic longint signed scaled_score(input int in_row, input int key, input int in_task, input int in_head);
         longint signed dot;
         begin
             dot = 0;
             for (int c = 0; c < D_MODEL; c = c + 1) begin
-                dot += q_data_value(in_row, c) * k_data_value(key, c);
+                dot += q_data_value(in_row, c, in_task, in_head) *
+                       k_data_value(key, c, in_task, in_head);
             end
             scaled_score = ((dot >>> FRAC_W) * SCALE_Q8_8) >>> FRAC_W;
         end
     endfunction
 
-    function automatic logic signed [DATA_W-1:0] expected_o(input int in_row, input int out_col);
+    function automatic logic signed [DATA_W-1:0] expected_o(
+        input int in_row,
+        input int out_col,
+        input int in_task,
+        input int in_head
+    );
         longint signed m;
         longint signed l;
         longint signed acc;
@@ -411,7 +425,7 @@ module tb_flash_attn_top_e2e_smoke;
 
             for (int key = 0; key < S_LEN; key = key + 1) begin
                 if ((key < VALID_LEN) && (key <= in_row)) begin
-                    score = scaled_score(in_row, key);
+                    score = scaled_score(in_row, key, in_task, in_head);
 
                     if (l == 0) begin
                         old_scale = 0;
@@ -431,7 +445,7 @@ module tb_flash_attn_top_e2e_smoke;
 
                     acc_weight = dropout_acc_weight(in_row, key, new_weight);
                     acc = ((acc * old_scale) >>> WEIGHT_FRAC) +
-                          (acc_weight * v_data_value(key, out_col));
+                          (acc_weight * v_data_value(key, out_col, in_task, in_head));
                 end
             end
 
@@ -476,36 +490,62 @@ module tb_flash_attn_top_e2e_smoke;
 
     function automatic int task_region_limit(input int unsigned base);
         begin
-            task_region_limit = base + ((TASK_COUNT - 1) * TASK_STRIDE_BYTES) + TENSOR_BYTES;
+            task_region_limit = base + TASK_REGION_BYTES;
         end
     endfunction
 
     function automatic int task_index_from_addr(input int unsigned addr, input int unsigned base);
         begin
-            task_index_from_addr = (addr - base) / TASK_STRIDE_BYTES;
+            if (TASK_COUNT <= 1) begin
+                task_index_from_addr = 0;
+            end else begin
+                task_index_from_addr = (addr - base) / TASK_STRIDE_BYTES;
+            end
         end
     endfunction
 
-    function automatic int addr_to_elem(input int unsigned addr, input int unsigned base);
+    function automatic int head_index_from_addr(input int unsigned addr, input int unsigned base);
         int task_idx;
         int task_base;
         begin
             task_idx = task_index_from_addr(addr, base);
             task_base = base + task_idx * TASK_STRIDE_BYTES;
-            addr_to_elem = (addr - task_base) / 2;
+            if (HEAD_COUNT <= 1) begin
+                head_index_from_addr = 0;
+            end else begin
+                head_index_from_addr = (addr - task_base) / HEAD_STRIDE_BYTES;
+            end
         end
     endfunction
 
-    function automatic logic [15:0] source_value(input int source, input int idx);
+    function automatic int addr_to_elem(input int unsigned addr, input int unsigned base);
+        int task_idx;
+        int head_idx;
+        int tensor_base;
+        begin
+            task_idx = task_index_from_addr(addr, base);
+            head_idx = head_index_from_addr(addr, base);
+            tensor_base = base + task_idx * TASK_STRIDE_BYTES + head_idx * HEAD_STRIDE_BYTES;
+            addr_to_elem = (addr - tensor_base) / 2;
+        end
+    endfunction
+
+    function automatic int run_index(input int in_task, input int in_head);
+        begin
+            run_index = in_task * HEAD_COUNT + in_head;
+        end
+    endfunction
+
+    function automatic logic [15:0] source_value(input int source, input int idx, input int in_task, input int in_head);
         int r;
         int c;
         begin
             r = idx / D_MODEL;
             c = idx % D_MODEL;
             case (source)
-                0: source_value = q_data_value(r, c) & 16'hffff;
-                1: source_value = k_data_value(r, c) & 16'hffff;
-                2: source_value = v_data_value(r, c) & 16'hffff;
+                0: source_value = q_data_value(r, c, in_task, in_head) & 16'hffff;
+                1: source_value = k_data_value(r, c, in_task, in_head) & 16'hffff;
+                2: source_value = v_data_value(r, c, in_task, in_head) & 16'hffff;
                 default: source_value = 16'h0000;
             endcase
         end
@@ -515,22 +555,32 @@ module tb_flash_attn_top_e2e_smoke;
         logic [AXI_DATA_W-1:0] word;
         int idx;
         int task_idx;
+        int head_idx;
+        int run_idx;
         begin
             word = '0;
             for (int lane = 0; lane < AXI_BYTES / 2; lane = lane + 1) begin
                 if ((addr >= Q_BASE) && (addr < task_region_limit(Q_BASE))) begin
+                    task_idx = task_index_from_addr(addr, Q_BASE);
+                    head_idx = head_index_from_addr(addr, Q_BASE);
                     idx = addr_to_elem(addr, Q_BASE) + lane;
-                    word[lane*16 +: 16] = source_value(0, idx);
+                    word[lane*16 +: 16] = source_value(0, idx, task_idx, head_idx);
                 end else if ((addr >= K_BASE) && (addr < task_region_limit(K_BASE))) begin
+                    task_idx = task_index_from_addr(addr, K_BASE);
+                    head_idx = head_index_from_addr(addr, K_BASE);
                     idx = addr_to_elem(addr, K_BASE) + lane;
-                    word[lane*16 +: 16] = source_value(1, idx);
+                    word[lane*16 +: 16] = source_value(1, idx, task_idx, head_idx);
                 end else if ((addr >= V_BASE) && (addr < task_region_limit(V_BASE))) begin
+                    task_idx = task_index_from_addr(addr, V_BASE);
+                    head_idx = head_index_from_addr(addr, V_BASE);
                     idx = addr_to_elem(addr, V_BASE) + lane;
-                    word[lane*16 +: 16] = source_value(2, idx);
+                    word[lane*16 +: 16] = source_value(2, idx, task_idx, head_idx);
                 end else if ((addr >= O_BASE) && (addr < task_region_limit(O_BASE))) begin
                     task_idx = task_index_from_addr(addr, O_BASE);
+                    head_idx = head_index_from_addr(addr, O_BASE);
+                    run_idx = run_index(task_idx, head_idx);
                     idx = addr_to_elem(addr, O_BASE) + lane;
-                    word[lane*16 +: 16] = o_mem[task_idx * NUM_ELEMS + idx];
+                    word[lane*16 +: 16] = o_mem[run_idx * NUM_ELEMS + idx];
                 end
             end
             read_axi_word = word;
@@ -544,6 +594,8 @@ module tb_flash_attn_top_e2e_smoke;
     );
         int idx;
         int task_idx;
+        int head_idx;
+        int run_idx;
         begin
             if ((addr < O_BASE) || (addr >= task_region_limit(O_BASE))) begin
                 $display("FAIL write outside O region addr=%0d", addr);
@@ -551,10 +603,12 @@ module tb_flash_attn_top_e2e_smoke;
             end
 
             task_idx = task_index_from_addr(addr, O_BASE);
+            head_idx = head_index_from_addr(addr, O_BASE);
+            run_idx = run_index(task_idx, head_idx);
             for (int lane = 0; lane < AXI_BYTES / 2; lane = lane + 1) begin
                 if (strb[lane * 2] || strb[lane * 2 + 1]) begin
                     idx = addr_to_elem(addr, O_BASE) + lane;
-                    o_mem[task_idx * NUM_ELEMS + idx] = data[lane*16 +: 16];
+                    o_mem[run_idx * NUM_ELEMS + idx] = data[lane*16 +: 16];
                 end
             end
             if (VERBOSE != 0) begin
@@ -807,6 +861,8 @@ module tb_flash_attn_top_e2e_smoke;
             axil_write(REG_DROPOUT_CFG, {DROPOUT_THRESHOLD[15:0], 15'd0, DROPOUT_EN[0]});
             axil_write(REG_DROPOUT_SEED, DROPOUT_SEED[15:0]);
             axil_write(REG_DROPOUT_SCALE, DROPOUT_SCALE_Q8_8[15:0]);
+            axil_write(REG_HEAD_COUNT, HEAD_COUNT);
+            axil_write(REG_HEAD_STRIDE, HEAD_STRIDE_BYTES);
         end
     endtask
 
@@ -814,38 +870,42 @@ module tb_flash_attn_top_e2e_smoke;
         logic signed [15:0] got;
         logic signed [15:0] exp;
         int idx;
+        int run_idx;
         begin
             changed_count = 0;
             for (int t = 0; t < TASK_COUNT; t = t + 1) begin
-                for (int r = 0; r < S_LEN; r = r + 1) begin
-                    for (int c = 0; c < D_MODEL; c = c + 1) begin
-                        idx = (t * NUM_ELEMS) + elem_index(r, c);
-                        got = o_mem[idx];
-                        if ((^got) === 1'bx) begin
-                            $display("FAIL task%0d O[%0d][%0d] is X/Z", t, r, c);
-                            $fatal(1);
-                        end
-                        changed_count++;
-                        if (CHECK_BITEXACT != 0) begin
-                            exp = expected_o(r, c);
-                            if (got !== exp) begin
-                                $display("FAIL TOP task%0d O[%0d][%0d] got=%0d hex=%04h expected=%0d hex=%04h",
-                                         t, r, c, got, got, exp, exp);
+                for (int h = 0; h < HEAD_COUNT; h = h + 1) begin
+                    run_idx = run_index(t, h);
+                    for (int r = 0; r < S_LEN; r = r + 1) begin
+                        for (int c = 0; c < D_MODEL; c = c + 1) begin
+                            idx = (run_idx * NUM_ELEMS) + elem_index(r, c);
+                            got = o_mem[idx];
+                            if ((^got) === 1'bx) begin
+                                $display("FAIL task%0d head%0d O[%0d][%0d] is X/Z", t, h, r, c);
                                 $fatal(1);
                             end
-                        end else if (r >= VALID_LEN) begin
-                            exp = '0;
-                            if (got !== exp) begin
-                                $display("FAIL TOP task%0d padding row O[%0d][%0d] got=%0d expected zero",
-                                         t, r, c, got);
-                                $fatal(1);
-                            end
-                        end else if ((r == 0) && (DROPOUT_EN == 0)) begin
-                            exp = v_data_value(0, c);
-                            if (got !== exp) begin
-                                $display("FAIL TOP task%0d causal row0 O[0][%0d] got=%0d expected V[0][%0d]=%0d",
-                                         t, c, got, c, exp);
-                                $fatal(1);
+                            changed_count++;
+                            if (CHECK_BITEXACT != 0) begin
+                                exp = expected_o(r, c, t, h);
+                                if (got !== exp) begin
+                                    $display("FAIL TOP task%0d head%0d O[%0d][%0d] got=%0d hex=%04h expected=%0d hex=%04h",
+                                             t, h, r, c, got, got, exp, exp);
+                                    $fatal(1);
+                                end
+                            end else if (r >= VALID_LEN) begin
+                                exp = '0;
+                                if (got !== exp) begin
+                                    $display("FAIL TOP task%0d head%0d padding row O[%0d][%0d] got=%0d expected zero",
+                                             t, h, r, c, got);
+                                    $fatal(1);
+                                end
+                            end else if ((r == 0) && (DROPOUT_EN == 0)) begin
+                                exp = v_data_value(0, c, t, h);
+                                if (got !== exp) begin
+                                    $display("FAIL TOP task%0d head%0d causal row0 O[0][%0d] got=%0d expected V[0][%0d]=%0d",
+                                             t, h, c, got, c, exp);
+                                    $fatal(1);
+                                end
                             end
                         end
                     end

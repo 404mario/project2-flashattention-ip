@@ -51,6 +51,8 @@ module axi_lite_regs #(
     output logic [15:0]          dropout_threshold,
     output logic [15:0]          dropout_seed,
     output logic [15:0]          dropout_scale_q8_8,
+    output logic [31:0]          head_count,
+    output logic [31:0]          head_stride_bytes,
 
     input  logic                 busy,
     input  logic                 done,
@@ -87,6 +89,8 @@ module axi_lite_regs #(
     localparam logic [ADDR_W-1:0] REG_DROPOUT_CFG  = 'h60;
     localparam logic [ADDR_W-1:0] REG_DROPOUT_SEED = 'h64;
     localparam logic [ADDR_W-1:0] REG_DROPOUT_SCALE = 'h68;
+    localparam logic [ADDR_W-1:0] REG_HEAD_COUNT    = 'h6C;
+    localparam logic [ADDR_W-1:0] REG_HEAD_STRIDE   = 'h70;
 
     localparam logic signed [31:0] DEFAULT_NEG_LARGE = -32'sd32768;
     localparam logic signed [31:0] DEFAULT_SCALE     =  32'sd32; // 0.125 in Q8.8
@@ -97,6 +101,8 @@ module axi_lite_regs #(
     localparam logic [15:0]        DEFAULT_DROPOUT_THRESHOLD = 16'd0;
     localparam logic [15:0]        DEFAULT_DROPOUT_SEED = 16'hace1;
     localparam logic [15:0]        DEFAULT_DROPOUT_SCALE = 16'd256;
+    localparam logic [31:0]        DEFAULT_HEAD_COUNT = 32'd1;
+    localparam logic [31:0]        DEFAULT_HEAD_STRIDE = S_LEN * D_MODEL * 2;
 
     logic [ADDR_W-1:0] awaddr_q;
     logic [DATA_W-1:0] wdata_q;
@@ -122,6 +128,8 @@ module axi_lite_regs #(
     logic [15:0] dropout_threshold_q;
     logic [15:0] dropout_seed_q;
     logic [15:0] dropout_scale_q8_8_q;
+    logic [31:0] head_count_q;
+    logic [31:0] head_stride_bytes_q;
     logic [31:0] dropout_cfg_wr_value;
     logic [31:0] dropout_seed_wr_value;
     logic [31:0] dropout_scale_wr_value;
@@ -169,6 +177,8 @@ module axi_lite_regs #(
     assign dropout_threshold = dropout_threshold_q;
     assign dropout_seed = dropout_seed_q;
     assign dropout_scale_q8_8 = dropout_scale_q8_8_q;
+    assign head_count = head_count_q;
+    assign head_stride_bytes = head_stride_bytes_q;
     assign irq         = irq_en_q && done_sticky_q;
     assign dropout_cfg_wr_value =
         apply_wstrb32({dropout_threshold_q, 15'd0, dropout_en_q}, wdata_q, wstrb_q);
@@ -214,6 +224,8 @@ module axi_lite_regs #(
             end
             REG_DROPOUT_SEED:  s_axil_rdata = {16'd0, dropout_seed_q};
             REG_DROPOUT_SCALE: s_axil_rdata = {16'd0, dropout_scale_q8_8_q};
+            REG_HEAD_COUNT:    s_axil_rdata = head_count_q;
+            REG_HEAD_STRIDE:   s_axil_rdata = head_stride_bytes_q;
             default:           s_axil_rdata = '0;
         endcase
     end
@@ -248,6 +260,8 @@ module axi_lite_regs #(
             dropout_threshold_q <= DEFAULT_DROPOUT_THRESHOLD;
             dropout_seed_q  <= DEFAULT_DROPOUT_SEED;
             dropout_scale_q8_8_q <= DEFAULT_DROPOUT_SCALE;
+            head_count_q    <= DEFAULT_HEAD_COUNT;
+            head_stride_bytes_q <= DEFAULT_HEAD_STRIDE;
             done_sticky_q   <= 1'b0;
             error_sticky_q  <= 1'b0;
         end else begin
@@ -349,6 +363,12 @@ module axi_lite_regs #(
                     end
                     REG_DROPOUT_SCALE: begin
                         dropout_scale_q8_8_q <= dropout_scale_wr_value[15:0];
+                    end
+                    REG_HEAD_COUNT: begin
+                        head_count_q <= apply_wstrb32(head_count_q, wdata_q, wstrb_q);
+                    end
+                    REG_HEAD_STRIDE: begin
+                        head_stride_bytes_q <= apply_wstrb32(head_stride_bytes_q, wdata_q, wstrb_q);
                     end
                     default: begin
                     end

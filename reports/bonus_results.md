@@ -2,9 +2,8 @@
 
 Branch: `codex-bonus-integrated-ppa-skeleton`
 
-This file records evidence for the unified bonus branch rebuilt on top of the PPA-passing
-baseline. Raw simulator outputs under `sim_build/` remain ignored by Git, so this tracked
-summary is updated after each bonus item is ported and rerun on this branch.
+This file records tracked simulation evidence for the integrated bonus branch rebuilt on top
+of the PPA-passing baseline. Raw simulator outputs under `sim_build/` remain ignored by Git.
 
 ## Baseline Reference
 
@@ -23,103 +22,32 @@ Acceptance thresholds:
 
 ## Ported Bonus Items
 
-- Bonus 3, configurable sequence length: compile-time `S_LEN` is verified through independent top E2E smoke cases with S=64 and S=128.
-- Bonus 4, padding mask: `VALID_LEN <= S_LEN` masks invalid K/V tokens and zeroes invalid output rows. Default `VALID_LEN=S_LEN` preserves baseline behavior.
-- Bonus 5, additional fixed-point formats: Q6.10 and Q4.12 smoke regressions reuse the same AXI-Lite/DMA flow through parameterized testbench/checker paths. They do not change default Q8.8 baseline behavior.
-- Bonus 6, dropout training mode: deterministic mask, threshold, seed, and inverted dropout scale are runtime programmable. Default `DROPOUT_EN=0` preserves non-dropout behavior.
-- Bonus 8, AXI4-Stream interface: `flash_attn_axis_top` wraps the shared `flash_core` with Q/KV input streams and O output stream.
-- Bonus 9, lightweight task queue: `TASK_COUNT` and `TASK_STRIDE` registers chain multiple independent tensor regions through the same top-level DMA/control path. Default `TASK_COUNT=1` preserves the single-task baseline path.
+- Bonus 2, multi-head support: sequential `HEAD_COUNT` runs advance Q/K/V/O addresses by `HEAD_STRIDE_BYTES`.
+- Bonus 3, configurable sequence length: compile-time `S_LEN` is verified with S=64 and S=128 top E2E smoke cases.
+- Bonus 4, padding mask: `VALID_LEN <= S_LEN` masks invalid K/V tokens and zeroes invalid output rows.
+- Bonus 5, additional fixed-point formats: Q6.10 and Q4.12 smoke regressions reuse the same AXI-Lite/DMA flow.
+- Bonus 6, dropout training mode: deterministic mask, threshold, seed, and inverted scale are runtime programmable.
+- Bonus 8, AXI4-Stream interface: `flash_attn_axis_top` wraps the shared core with Q/KV input streams and O output stream.
+- Bonus 9, lightweight task queue: `TASK_COUNT` and `TASK_STRIDE_BYTES` chain multiple tensor regions through one START.
 
-## Top Smoke Results
+## Latest Quick Evidence
 
-Command:
-
-```bash
-./sim/run_top_compile.sh
-./sim/run_top_e2e_smoke.sh
-```
-
-Latest local result after porting Bonus 4, Bonus 5, Bonus 6, and Bonus 9:
+The table below is updated after running the quick scripts on this branch.
 
 | Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | FP32 MAE | FP32 MaxE |
 |---|---:|---|---|---:|---:|---:|---:|---:|
-| AXI-Lite control regression | register-only | START, SOFT_RESET, IRQ_EN, DONE W1C, VALID_LEN, TASK_COUNT, TASK_STRIDE, DROPOUT | PASS | n/a | n/a | n/a | n/a | n/a |
-| Q8.8 small top E2E | S=8,D=8,BK=4,BQ=16 | VALID_LEN=8, DROPOUT_EN=0 | PASS | 456 | 384 | 128 | 0.000183 | 0.003906 |
-| Padding mask top E2E | S=16,D=8,BK=4,BQ=4 | VALID_LEN=5, DROPOUT_EN=0 | PASS | 827 | 1152 | 256 | 0.000092 | 0.003906 |
-| Q6.10 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=10, VALID_LEN=16 | PASS | 1388 | 1536 | 256 | 0.000046 | 0.000977 |
-| Q4.12 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=12, VALID_LEN=16 | PASS | 1388 | 1536 | 256 | 0.000053 | 0.000244 |
-| Q8.8 medium top E2E | S=32,D=16,BK=8,BQ=8 | VALID_LEN=32, DROPOUT_EN=0 | PASS | 4780 | 6144 | 1024 | 0.000038 | 0.003906 |
-
-Default Q8.8 small/medium cycle counts match the PPA skeleton after task queue and dropout
-were added.
-
-## Configurable Sequence Results
-
-Command:
-
-```bash
-bash ./sim/run_bonus_sequence_smoke.sh
-```
-
-Latest local result after porting Bonus 3:
-
-| Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | FP32 MAE | FP32 MaxE |
-|---|---:|---|---|---:|---:|---:|---:|---:|
+| Q8.8 small top E2E | S=8,D=8,BK=4,BQ=16 | default | PASS | 456 | 384 | 128 | 0.000183 | 0.003906 |
+| Padding mask top E2E | S=16,D=8,BK=4,BQ=4 | VALID_LEN=5 | PASS | 827 | 1152 | 256 | 0.000092 | 0.003906 |
+| Q6.10 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=10 | PASS | 1388 | 1536 | 256 | 0.000046 | 0.000977 |
+| Q4.12 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=12 | PASS | 1388 | 1536 | 256 | 0.000053 | 0.000244 |
+| Q8.8 medium top E2E | S=32,D=16,BK=8,BQ=8 | default | PASS | 4780 | 6144 | 1024 | 0.000038 | 0.003906 |
 | Configurable S smoke | S=64,D=16,BK=8,BQ=16 | VALID_LEN=64 | PASS | 15152 | 12288 | 2048 | 0.000031 | 0.003906 |
 | Configurable S smoke | S=128,D=16,BK=8,BQ=16 | VALID_LEN=128 | PASS | 53920 | 40960 | 4096 | 0.000017 | 0.003906 |
+| Task queue smoke | S=8,D=8,BK=4,BQ=4 | TASK_COUNT=2 | PASS | 934 | 1024 | 256 | <= 0.000183 | 0.003906 |
+| AXI4-Stream smoke | S=8,D=8,BK=4 | stream wrapper | PASS | wait=587 | n/a | n/a | 0.000183 | 0.003906 |
+| Dropout small smoke | S=8,D=8,BK=4,BQ=4 | DROPOUT_EN=1 | PASS | 466 | 512 | 128 | 0.001404 | 0.007812 |
+| Dropout medium smoke | S=32,D=16,BK=8,BQ=8 | DROPOUT_EN=1 | PASS | 4780 | 6144 | 1024 | 0.000053 | 0.003906 |
+| Multi-head smoke | S=8,D=8,BK=4,BQ=4 | H=4 | PASS | 1870 | 2048 | 512 | <= 0.000183 | 0.003906 |
+| Multi-head smoke | S=8,D=8,BK=4,BQ=4 | H=8 | PASS | 3742 | 4096 | 1024 | <= 0.000183 | 0.003906 |
 
-This supports the Bonus 3 claim as compile-time configurable `S_LEN`; it does not claim a
-full S=512,D=64 run.
-
-## Task Queue Results
-
-Command:
-
-```bash
-bash ./sim/run_bonus_task_queue_smoke.sh
-```
-
-Latest local result after porting Bonus 9:
-
-| Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES |
-|---|---:|---|---|---:|---:|---:|
-| Task queue smoke | S=8,D=8,BK=4,BQ=4 | TASK_COUNT=2, TASK_STRIDE_BYTES=128 | PASS | 934 | 1024 | 256 |
-
-The single-task default path is still covered by `run_top_e2e_smoke.sh`, where Q8.8
-`S=8` remains 456 cycles and `S=32` remains 4780 cycles.
-
-## AXI4-Stream Results
-
-Command:
-
-```bash
-bash ./sim/run_bonus_axis_stream_smoke.sh
-```
-
-Latest local result after porting Bonus 8:
-
-| Case | Shape | Config | Result | Wait cycles | FP32 MAE | FP32 MaxE |
-|---|---:|---|---|---:|---:|---:|
-| AXI4-Stream smoke | S=8,D=8,BK=4,BQ=4 | Q stream, KV stream, O stream | PASS | 587 | 0.000183 | 0.003906 |
-
-This wrapper is an independent top and does not change the default AXI-Lite + AXI master
-baseline top.
-
-## Dropout Results
-
-Command:
-
-```bash
-bash ./sim/run_bonus_dropout_smoke.sh
-```
-
-Latest local result after porting Bonus 6:
-
-| Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | FP32 MAE | FP32 MaxE |
-|---|---:|---|---|---:|---:|---:|---:|---:|
-| Dropout small | S=8,D=8,BK=4,BQ=4 | threshold=16384, seed=0x1234, scale_q8_8=341 | PASS | 466 | 512 | 128 | 0.001404 | 0.007812 |
-| Dropout medium | S=32,D=16,BK=8,BQ=8 | threshold=16384, seed=0x1234, scale_q8_8=341 | PASS | 4780 | 6144 | 1024 | 0.000053 | 0.003906 |
-
-Both cases match the RTL fixed-point mirror with `MaxE = 0`. A full-size
-`RUN_FULL=1` dropout run was started but exceeded the local 5-minute tool timeout, so it is
-not claimed yet.
+Default Q8.8 small/medium cycle counts match the PPA skeleton after the bonus ports.

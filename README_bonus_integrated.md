@@ -1,66 +1,46 @@
-# FlashAttention IP Unified Bonus Version
+# Integrated Bonus Branch On PPA Baseline
 
 Branch: `codex-bonus-integrated-ppa-skeleton`
 
-This branch is the clean unified bonus skeleton based on the PPA-passing baseline branch `codex-baseline-ppa-fix` at commit `02b8334`.
+This branch is the unified bonus integration branch rebuilt from `codex-baseline-ppa-fix`,
+the PPA-passing baseline. The goal is to preserve the baseline timing/area/performance path
+while adding optional bonus modes behind registers, parameters, or separate wrappers.
 
-The final bonus submission should use one integrated bonus branch. Individual bonus experiments can remain as development branches, but their final, verified RTL and tests must be ported here so the bonus version is evaluated as one independent project.
+## Claimed / Ported Items
 
-## Baseline Inherited by This Branch
-
-This branch starts from the baseline that passed simulation and Genus checks:
-
-| Metric | Result |
-|---|---:|
-| Full-size cycles | 269808 |
-| RD_BYTES | 589824 |
-| WR_BYTES | 32768 |
-| FP32 MAE | 0.000097 |
-| FP32 MaxE | 0.054688 |
-| Genus clock | 10 ns |
-| Genus timing | MET, slack 0 ps |
-| Total cell area | 9176561.366 |
-| NAND2 equivalent gates | 1913697 |
-
-Bonus changes must not modify the required baseline behavior when bonus controls are left at their default disabled values.
-
-## Non-Regression Rules
-
-- Keep the baseline AXI4-Lite + AXI master/DMA path intact.
-- Keep default configuration equivalent to the passing baseline: single batch, single head, S=256, D=64, Q8.8, causal enabled.
-- Do not lower the baseline synthesis target below 10 ns unless a separate bonus-only report clearly marks the tradeoff.
-- Run the baseline-shaped top E2E vector test after every bonus integration.
-- If a bonus adds datapath logic, rerun Genus on the integrated bonus branch and compare timing/area against the baseline report.
-
-## Planned Unified Bonus Claims
-
-| # | Bonus item | Integration status in this branch |
+| # | Bonus item | Current implementation |
 |---:|---|---|
-| 3 | Longer/configurable sequence | Planned port from old integrated branch. |
-| 4 | Padding mask | Planned port from old integrated branch. |
-| 5 | Other fixed-point formats | Planned port from old integrated branch. |
-| 6 | Dropout training mode | Planned port from old integrated branch. |
-| 7 | Lower precision INT8/FP8 exploration | Planned; low-precision work must land here before final submission. |
-| 8 | AXI4-Stream interface | Planned port from old integrated branch. |
-| 9 | DMA/task queue | Planned port from old integrated branch. |
+| 2 | Multi-head support | Sequential head execution via `HEAD_COUNT` and `HEAD_STRIDE_BYTES`. |
+| 3 | Longer/configurable sequence | Parametric `S_LEN` smoke cases for S=64 and S=128. |
+| 4 | Padding mask | `VALID_LEN` masks invalid keys and zeroes invalid query rows. |
+| 5 | Other fixed-point formats | Compile-time Q6.10 and Q4.12 test/checker variants. |
+| 6 | Dropout | Deterministic post-softmax dropout with seed, threshold, and inverted scale registers. |
+| 8 | AXI4-Stream interface | Additional `flash_attn_axis_top` wrapper; original DMA top remains available. |
+| 9 | DMA/task queue | `TASK_COUNT` and `TASK_STRIDE_BYTES` run multiple tasks from one START. |
 
-Do not claim an item in the final report until the corresponding full-size or item-specific evidence has been rerun on this branch.
+Items #1 and #7 are not claimed yet.
 
 ## Verification Entry Points
 
-Baseline sanity inherited by this branch:
-
-```bash
-./sim/run_top_compile.sh
-./sim/run_top_e2e_smoke.sh
-RUN_VECTORS=1 ./sim/run_top_e2e_smoke.sh
-```
-
-Unified bonus regression entry point:
+Quick integrated regression:
 
 ```bash
 bash ./sim/run_bonus_all.sh
 ```
 
-At this skeleton stage, `run_bonus_all.sh` only runs the inherited baseline checks and records that bonus feature ports are still pending.
+Individual quick checks:
 
+```bash
+./sim/run_top_compile.sh
+./sim/run_top_e2e_smoke.sh
+./sim/run_bonus_sequence_smoke.sh
+./sim/run_bonus_task_queue_smoke.sh
+./sim/run_bonus_axis_stream_smoke.sh
+./sim/run_bonus_dropout_smoke.sh
+./sim/run_bonus_multi_head_smoke.sh
+```
+
+The default Q8.8 single-task path remains covered by `run_top_e2e_smoke.sh`; bonus modes are
+programmed only when their registers or parameters are enabled.
+
+See `reports/bonus_results.md` for cycles, bytes, and error evidence.
