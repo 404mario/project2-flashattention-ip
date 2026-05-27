@@ -25,4 +25,7 @@ echo "=== integrated bonus: dropout smoke ==="
 echo "=== integrated bonus: multi-head smoke ==="
 ./sim/run_bonus_multi_head_smoke.sh
 
+echo "=== integrated bonus: low-precision smoke ==="
+./sim/run_bonus_lowprecision_int8_smoke.sh
+
 echo "Integrated bonus quick checks passed."

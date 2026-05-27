@@ -136,6 +136,91 @@ def trunc_div_signed(numer, denom):
     return sign * (abs(int(numer)) // abs(int(denom)))
 
 
+def scale_pattern(value, shift):
+    value = int(value)
+    shift = int(shift)
+    if shift >= 0:
+        return value << shift
+    return value >> (-shift)
+
+
+def saturate_signed(value, data_w):
+    lo = -(1 << (int(data_w) - 1))
+    hi = (1 << (int(data_w) - 1)) - 1
+    return min(max(int(value), lo), hi)
+
+
+def fp8_e4m3_to_q8_8(raw):
+    raw = int(raw) & 0xFF
+    sign = -1 if (raw & 0x80) else 1
+    exp = (raw >> 3) & 0xF
+    mant = raw & 0x7
+    if exp == 0:
+        mag = [0, 1, 1, 2, 2, 3, 3, 4][mant]
+    elif exp == 1:
+        mag = (8 + mant + 1) >> 1
+    elif exp <= 13:
+        mag = (8 + mant) << (exp - 2)
+    else:
+        mag = 32768
+    if sign < 0:
+        return -32768 if mag >= 32768 else -mag
+    return 32767 if mag >= 32768 else mag
+
+
+def q8_8_to_fp8_e4m3(value):
+    value = int(value)
+    sign_bit = 0x80 if value < 0 else 0
+    abs_q = abs(value)
+    if abs_q == 0:
+        return 0
+
+    def pack(exp, sig):
+        if sig > 15:
+            exp += 1
+            sig = 8
+        if exp >= 15:
+            return sign_bit | 0x7F
+        return sign_bit | ((exp & 0xF) << 3) | (sig & 0x7)
+
+    if abs_q <= 3:
+        return sign_bit | ((abs_q << 1) & 0x7)
+    if abs_q <= 7:
+        return pack(1, abs_q << 1)
+    if abs_q <= 15:
+        return pack(2, abs_q)
+    if abs_q <= 31:
+        return pack(3, (abs_q >> 1) + (1 if (abs_q & 0x1) else 0))
+    if abs_q <= 63:
+        return pack(4, (abs_q >> 2) + (1 if (abs_q & 0x3) else 0))
+    if abs_q <= 127:
+        return pack(5, (abs_q >> 3) + (1 if (abs_q & 0x7) else 0))
+    if abs_q <= 255:
+        return pack(6, (abs_q >> 4) + (1 if (abs_q & 0xF) else 0))
+    if abs_q <= 511:
+        return pack(7, (abs_q >> 5) + (1 if (abs_q & 0x1F) else 0))
+    if abs_q <= 1023:
+        return pack(8, (abs_q >> 6) + (1 if (abs_q & 0x3F) else 0))
+    if abs_q <= 2047:
+        return pack(9, (abs_q >> 7) + (1 if (abs_q & 0x7F) else 0))
+    if abs_q <= 4095:
+        return pack(10, (abs_q >> 8) + (1 if (abs_q & 0xFF) else 0))
+    if abs_q <= 8191:
+        return pack(11, (abs_q >> 9) + (1 if (abs_q & 0x1FF) else 0))
+    if abs_q <= 16383:
+        return pack(12, (abs_q >> 10) + (1 if (abs_q & 0x3FF) else 0))
+    if abs_q <= 32767:
+        return pack(13, (abs_q >> 11) + (1 if (abs_q & 0x7FF) else 0))
+    return sign_bit | 0x7F
+
+
+def fp8_e4m3_roundtrip_matrix(values):
+    out = np.zeros_like(values, dtype=np.int64)
+    for idx, value in np.ndenumerate(values):
+        out[idx] = fp8_e4m3_to_q8_8(q8_8_to_fp8_e4m3(value))
+    return out
+
+
 def saturate_i16(value):
     return min(max(int(value), -32768), 32767)
 
@@ -183,9 +268,9 @@ def build_inputs(s_len, d_model, frac_w=8, task_index=0, head_index=0):
     kv_head_shift = frac_w - 8 if frac_w > 8 else 0
     for r in range(s_len):
         for c in range(d_model):
-            q_base = (((r * 3 + c * 5 + 7) % 17) - 8) << qk_shift
-            k_base = (((r * 5 + c * 7 + 11) % 19) - 9) << qk_shift
-            v_base = (((r * 7 + c * 3 + 5) % 23) - 11) << v_shift
+            q_base = scale_pattern(((r * 3 + c * 5 + 7) % 17) - 8, qk_shift)
+            k_base = scale_pattern(((r * 5 + c * 7 + 11) % 19) - 9, qk_shift)
+            v_base = scale_pattern(((r * 7 + c * 3 + 5) % 23) - 11, v_shift)
             q[r, c] = q_base + ((int(head_index) - int(task_index)) << q_head_shift)
             k[r, c] = k_base + ((int(head_index) + int(task_index)) << kv_head_shift)
             v[r, c] = v_base + ((int(head_index) * 3 + int(task_index)) << kv_head_shift)
@@ -203,7 +288,12 @@ def load_inputs(args):
         v = read_hex16_matrix(Path(args.v_hex), args.s_len, args.d_model)
         return q, k, v
 
-    return build_inputs(args.s_len, args.d_model, args.frac_w, args.task_index, args.head_index)
+    q, k, v = build_inputs(args.s_len, args.d_model, args.frac_w, args.task_index, args.head_index)
+    if args.fp8_e4m3_io:
+        q = fp8_e4m3_roundtrip_matrix(q)
+        k = fp8_e4m3_roundtrip_matrix(k)
+        v = fp8_e4m3_roundtrip_matrix(v)
+    return q, k, v
 
 
 def dropout_rand16(row, key, seed):
@@ -249,6 +339,7 @@ def rtl_expected(
     dropout_threshold=0,
     dropout_seed=0xACE1,
     dropout_scale_q8_8=256,
+    data_w=16,
 ):
     s_len, d_model = q.shape
     out = np.zeros((s_len, d_model), dtype=np.int64)
@@ -315,7 +406,7 @@ def rtl_expected(
                 acc = ((acc * old_scale) >> weight_frac) + (acc_weight * v[key])
 
         for d in range(d_model):
-            out[row, d] = normalize_approx(int(acc[d]), int(l_state))
+            out[row, d] = saturate_signed(normalize_approx(int(acc[d]), int(l_state)), data_w)
 
     return out
 
@@ -331,6 +422,7 @@ def fp32_expected(
     dropout_threshold=0,
     dropout_seed=0xACE1,
     dropout_scale_q8_8=256,
+    data_w=16,
 ):
     scale = float(1 << frac_w)
     qf = q.astype(np.float64) / scale
@@ -365,7 +457,7 @@ def fp32_expected(
         probs[valid_len:, :] = 0.0
     outf = probs @ vf
     out_int = np.rint(outf * scale).astype(np.int64)
-    return np.clip(out_int, -32768, 32767)
+    return np.clip(out_int, -(1 << (int(data_w) - 1)), (1 << (int(data_w) - 1)) - 1)
 
 
 def report(name, got, expected, frac_w=8):
@@ -397,6 +489,7 @@ def main():
     parser.add_argument("--d-model", type=int, required=True)
     parser.add_argument("--bk", type=int, required=True)
     parser.add_argument("--scale-q8-8", type=int, required=True)
+    parser.add_argument("--data-w", type=int, default=16)
     parser.add_argument("--frac-w", type=int, default=8)
     parser.add_argument("--softmax-frac", type=int, default=8)
     parser.add_argument("--valid-len", type=int)
@@ -415,6 +508,7 @@ def main():
     parser.add_argument("--dropout-threshold", type=int, default=0)
     parser.add_argument("--dropout-seed", type=lambda x: int(x, 0), default=0xACE1)
     parser.add_argument("--dropout-scale-q8-8", type=int, default=256)
+    parser.add_argument("--fp8-e4m3-io", action="store_true", help="Model FP8 E4M3 input and output quantization")
     args = parser.parse_args()
 
     hex_path = Path(args.hex)
@@ -436,7 +530,10 @@ def main():
         dropout_threshold=args.dropout_threshold,
         dropout_seed=args.dropout_seed,
         dropout_scale_q8_8=args.dropout_scale_q8_8,
+        data_w=args.data_w,
     )
+    if args.fp8_e4m3_io:
+        expected_rtl = fp8_e4m3_roundtrip_matrix(expected_rtl)
     _, max_err = report("RTL output vs RTL fixed-point mirror", got, expected_rtl, frac_w=args.frac_w)
     if max_err != 0:
         raise SystemExit(1)
@@ -457,6 +554,7 @@ def main():
             dropout_threshold=args.dropout_threshold,
             dropout_seed=args.dropout_seed,
             dropout_scale_q8_8=args.dropout_scale_q8_8,
+            data_w=args.data_w,
         )
         fp32_name = "RTL output vs FP32 dropout softmax golden" if args.dropout_en else "RTL output vs FP32 softmax golden"
         mae, maxe = report(fp32_name, got, expected_fp32, frac_w=args.frac_w)

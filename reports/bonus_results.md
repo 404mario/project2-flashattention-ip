@@ -27,6 +27,7 @@ Acceptance thresholds:
 - Bonus 4, padding mask: `VALID_LEN <= S_LEN` masks invalid K/V tokens and zeroes invalid output rows.
 - Bonus 5, additional fixed-point formats: Q6.10 and Q4.12 smoke regressions reuse the same AXI-Lite/DMA flow.
 - Bonus 6, dropout training mode: deterministic mask, threshold, seed, and inverted scale are runtime programmable.
+- Bonus 7, lower precision: INT8/Q4.4 external tensors and FP8/E4M3 tensors are verified through the top E2E flow.
 - Bonus 8, AXI4-Stream interface: `flash_attn_axis_top` wraps the shared core with Q/KV input streams and O output stream.
 - Bonus 9, lightweight task queue: `TASK_COUNT` and `TASK_STRIDE_BYTES` chain multiple tensor regions through one START.
 
@@ -49,5 +50,12 @@ The table below is updated after running the quick scripts on this branch.
 | Dropout medium smoke | S=32,D=16,BK=8,BQ=8 | DROPOUT_EN=1 | PASS | 4780 | 6144 | 1024 | 0.000053 | 0.003906 |
 | Multi-head smoke | S=8,D=8,BK=4,BQ=4 | H=4 | PASS | 1870 | 2048 | 512 | <= 0.000183 | 0.003906 |
 | Multi-head smoke | S=8,D=8,BK=4,BQ=4 | H=8 | PASS | 3742 | 4096 | 1024 | <= 0.000183 | 0.003906 |
+| INT8/Q4.4 low-precision smoke | S=8,D=8,BK=4,BQ=4 | DATA_W=8,FRAC_W=4 | PASS | 432 | 256 | 64 | 0.084961 | 0.250000 |
+| INT8/Q4.4 low-precision smoke | S=32,D=16,BK=8,BQ=8 | DATA_W=8,FRAC_W=4 | PASS | 4388 | 3072 | 512 | 0.046997 | 0.187500 |
+| FP8/E4M3 low-precision smoke | S=8,D=8,BK=4,BQ=4 | FP8_E4M3_MODE=1 | PASS | 432 | 256 | 64 | 0.001038 | 0.011719 |
+| FP8/E4M3 low-precision smoke | S=32,D=16,BK=8,BQ=8 | FP8_E4M3_MODE=1 | PASS | 4388 | 3072 | 512 | 0.000259 | 0.011719 |
 
 Default Q8.8 small/medium cycle counts match the PPA skeleton after the bonus ports.
+Low-precision rows have zero error against the integer RTL mirror. INT8/Q4.4 is a lossy
+bandwidth trade-off against FP32; FP8/E4M3 keeps the quick-smoke FP32 MaxE below the
+baseline acceptance threshold while halving external tensor bytes.

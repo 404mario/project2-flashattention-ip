@@ -13,7 +13,8 @@ module flash_attn_top #(
     parameter int USE_DOT_TREE    = 1,
     parameter int DOT_LANES       = 32,
     parameter int USE_CAUSAL_SKIP = 1,
-    parameter int SOFTMAX_FRAC    = 16
+    parameter int SOFTMAX_FRAC    = 16,
+    parameter int FP8_E4M3_MODE   = 0
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -73,6 +74,9 @@ module flash_attn_top #(
     output logic irq
 );
 
+    localparam int CORE_DATA_W = (FP8_E4M3_MODE != 0) ? 16 : DATA_W;
+    localparam int CORE_FRAC_W = (FP8_E4M3_MODE != 0) ? 8 : FRAC_W;
+
     logic start_pulse;
     logic soft_reset;
     logic irq_en;
@@ -110,8 +114,8 @@ module flash_attn_top #(
     logic [$clog2(S_LEN)-1:0] q_req_row;
     logic q_req_ready;
     logic q_data_valid;
-    logic signed [DATA_W-1:0] q_data [0:D_MODEL-1];
-    logic [D_MODEL*DATA_W-1:0] q_data_flat;
+    logic signed [CORE_DATA_W-1:0] q_data [0:D_MODEL-1];
+    logic [D_MODEL*CORE_DATA_W-1:0] q_data_flat;
     logic q_data_ready;
 
     logic kv_req_valid;
@@ -119,16 +123,16 @@ module flash_attn_top #(
     logic [$clog2(BK+1)-1:0]  kv_req_len;
     logic kv_req_ready;
     logic kv_data_valid;
-    logic signed [DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1];
-    logic signed [DATA_W-1:0] v_tile [0:BK-1][0:D_MODEL-1];
-    logic [BK*D_MODEL*DATA_W-1:0] k_tile_flat;
-    logic [BK*D_MODEL*DATA_W-1:0] v_tile_flat;
+    logic signed [CORE_DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1];
+    logic signed [CORE_DATA_W-1:0] v_tile [0:BK-1][0:D_MODEL-1];
+    logic [BK*D_MODEL*CORE_DATA_W-1:0] k_tile_flat;
+    logic [BK*D_MODEL*CORE_DATA_W-1:0] v_tile_flat;
     logic kv_data_ready;
 
     logic o_valid;
     logic [$clog2(S_LEN)-1:0] o_row;
-    logic signed [DATA_W-1:0] o_data [0:D_MODEL-1];
-    logic [D_MODEL*DATA_W-1:0] o_data_flat;
+    logic signed [CORE_DATA_W-1:0] o_data [0:D_MODEL-1];
+    logic [D_MODEL*CORE_DATA_W-1:0] o_data_flat;
     logic o_ready;
 
     logic rd_req_valid;
@@ -198,15 +202,15 @@ module flash_attn_top #(
 
     always_comb begin
         for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
-            q_data[comb_col] = q_data_flat[comb_col * DATA_W +: DATA_W];
-            o_data[comb_col] = o_data_flat[comb_col * DATA_W +: DATA_W];
+            q_data[comb_col] = q_data_flat[comb_col * CORE_DATA_W +: CORE_DATA_W];
+            o_data[comb_col] = o_data_flat[comb_col * CORE_DATA_W +: CORE_DATA_W];
         end
         for (comb_row = 0; comb_row < BK; comb_row = comb_row + 1) begin
             for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
                 k_tile[comb_row][comb_col] =
-                    k_tile_flat[((comb_row * D_MODEL + comb_col) * DATA_W) +: DATA_W];
+                    k_tile_flat[((comb_row * D_MODEL + comb_col) * CORE_DATA_W) +: CORE_DATA_W];
                 v_tile[comb_row][comb_col] =
-                    v_tile_flat[((comb_row * D_MODEL + comb_col) * DATA_W) +: DATA_W];
+                    v_tile_flat[((comb_row * D_MODEL + comb_col) * CORE_DATA_W) +: CORE_DATA_W];
             end
         end
     end
@@ -346,9 +350,9 @@ module flash_attn_top #(
         .S_LEN(S_LEN),
         .D_MODEL(D_MODEL),
         .BK(BK),
-        .DATA_W(DATA_W),
+        .DATA_W(CORE_DATA_W),
         .ACC_W(ACC_W),
-        .FRAC_W(FRAC_W),
+        .FRAC_W(CORE_FRAC_W),
         .BQ(BQ),
         .USE_DOT_TREE(USE_DOT_TREE),
         .DOT_LANES(DOT_LANES),
@@ -390,64 +394,127 @@ module flash_attn_top #(
         .o_ready(o_ready)
     );
 
-    dma_controller #(
-        .S_LEN(S_LEN),
-        .ADDR_W(ADDR_W),
-        .DATA_W(DATA_W),
-        .D_MODEL(D_MODEL),
-        .BK(BK),
-        .AXI_DATA_W(AXI_DATA_W)
-    ) u_dma_controller (
-        .clk(clk),
-        .rst_n(work_rst_n),
-        .start(task_start_pulse),
-        .busy(dma_busy),
-        .done(dma_done),
-        .error(dma_error),
-        .q_base(q_base_eff),
-        .k_base(k_base_eff),
-        .v_base(v_base_eff),
-        .o_base(o_base_eff),
-        .stride_bytes(stride_bytes),
-        .q_req_valid(q_req_valid),
-        .q_req_row(q_req_row),
-        .q_req_ready(q_req_ready),
-        .q_data_valid(q_data_valid),
-        .q_data(),
-        .q_data_flat(q_data_flat),
-        .q_data_ready(q_data_ready),
-        .kv_req_valid(kv_req_valid),
-        .kv_req_start(kv_req_start),
-        .kv_req_len(kv_req_len),
-        .kv_req_ready(kv_req_ready),
-        .kv_data_valid(kv_data_valid),
-        .k_tile(),
-        .v_tile(),
-        .k_tile_flat(k_tile_flat),
-        .v_tile_flat(v_tile_flat),
-        .kv_data_ready(kv_data_ready),
-        .o_valid(o_valid),
-        .o_row(o_row),
-        .o_data(o_data),
-        .o_data_flat(o_data_flat),
-        .o_ready(o_ready),
-        .rd_req_valid(rd_req_valid),
-        .rd_req_addr(rd_req_addr),
-        .rd_req_bytes(rd_req_bytes),
-        .rd_req_ready(rd_req_ready),
-        .rd_data_valid(rd_data_valid),
-        .rd_data(rd_data),
-        .rd_last(rd_last),
-        .rd_data_ready(rd_data_ready),
-        .wr_req_valid(wr_req_valid),
-        .wr_req_addr(wr_req_addr),
-        .wr_req_bytes(wr_req_bytes),
-        .wr_req_ready(wr_req_ready),
-        .wr_data_valid(wr_data_valid),
-        .wr_data(wr_data),
-        .wr_last(wr_last),
-        .wr_data_ready(wr_data_ready)
-    );
+    generate
+        if (FP8_E4M3_MODE != 0) begin : gen_fp8_dma
+            dma_controller_fp8 #(
+                .S_LEN(S_LEN),
+                .ADDR_W(ADDR_W),
+                .CORE_DATA_W(CORE_DATA_W),
+                .D_MODEL(D_MODEL),
+                .BK(BK),
+                .AXI_DATA_W(AXI_DATA_W)
+            ) u_dma_controller (
+                .clk(clk),
+                .rst_n(work_rst_n),
+                .start(task_start_pulse),
+                .busy(dma_busy),
+                .done(dma_done),
+                .error(dma_error),
+                .q_base(q_base_eff),
+                .k_base(k_base_eff),
+                .v_base(v_base_eff),
+                .o_base(o_base_eff),
+                .stride_bytes(stride_bytes),
+                .q_req_valid(q_req_valid),
+                .q_req_row(q_req_row),
+                .q_req_ready(q_req_ready),
+                .q_data_valid(q_data_valid),
+                .q_data(),
+                .q_data_flat(q_data_flat),
+                .q_data_ready(q_data_ready),
+                .kv_req_valid(kv_req_valid),
+                .kv_req_start(kv_req_start),
+                .kv_req_len(kv_req_len),
+                .kv_req_ready(kv_req_ready),
+                .kv_data_valid(kv_data_valid),
+                .k_tile(),
+                .v_tile(),
+                .k_tile_flat(k_tile_flat),
+                .v_tile_flat(v_tile_flat),
+                .kv_data_ready(kv_data_ready),
+                .o_valid(o_valid),
+                .o_row(o_row),
+                .o_data(o_data),
+                .o_data_flat(o_data_flat),
+                .o_ready(o_ready),
+                .rd_req_valid(rd_req_valid),
+                .rd_req_addr(rd_req_addr),
+                .rd_req_bytes(rd_req_bytes),
+                .rd_req_ready(rd_req_ready),
+                .rd_data_valid(rd_data_valid),
+                .rd_data(rd_data),
+                .rd_last(rd_last),
+                .rd_data_ready(rd_data_ready),
+                .wr_req_valid(wr_req_valid),
+                .wr_req_addr(wr_req_addr),
+                .wr_req_bytes(wr_req_bytes),
+                .wr_req_ready(wr_req_ready),
+                .wr_data_valid(wr_data_valid),
+                .wr_data(wr_data),
+                .wr_last(wr_last),
+                .wr_data_ready(wr_data_ready)
+            );
+        end else begin : gen_fixed_dma
+            dma_controller #(
+                .S_LEN(S_LEN),
+                .ADDR_W(ADDR_W),
+                .DATA_W(CORE_DATA_W),
+                .D_MODEL(D_MODEL),
+                .BK(BK),
+                .AXI_DATA_W(AXI_DATA_W)
+            ) u_dma_controller (
+                .clk(clk),
+                .rst_n(work_rst_n),
+                .start(task_start_pulse),
+                .busy(dma_busy),
+                .done(dma_done),
+                .error(dma_error),
+                .q_base(q_base_eff),
+                .k_base(k_base_eff),
+                .v_base(v_base_eff),
+                .o_base(o_base_eff),
+                .stride_bytes(stride_bytes),
+                .q_req_valid(q_req_valid),
+                .q_req_row(q_req_row),
+                .q_req_ready(q_req_ready),
+                .q_data_valid(q_data_valid),
+                .q_data(),
+                .q_data_flat(q_data_flat),
+                .q_data_ready(q_data_ready),
+                .kv_req_valid(kv_req_valid),
+                .kv_req_start(kv_req_start),
+                .kv_req_len(kv_req_len),
+                .kv_req_ready(kv_req_ready),
+                .kv_data_valid(kv_data_valid),
+                .k_tile(),
+                .v_tile(),
+                .k_tile_flat(k_tile_flat),
+                .v_tile_flat(v_tile_flat),
+                .kv_data_ready(kv_data_ready),
+                .o_valid(o_valid),
+                .o_row(o_row),
+                .o_data(o_data),
+                .o_data_flat(o_data_flat),
+                .o_ready(o_ready),
+                .rd_req_valid(rd_req_valid),
+                .rd_req_addr(rd_req_addr),
+                .rd_req_bytes(rd_req_bytes),
+                .rd_req_ready(rd_req_ready),
+                .rd_data_valid(rd_data_valid),
+                .rd_data(rd_data),
+                .rd_last(rd_last),
+                .rd_data_ready(rd_data_ready),
+                .wr_req_valid(wr_req_valid),
+                .wr_req_addr(wr_req_addr),
+                .wr_req_bytes(wr_req_bytes),
+                .wr_req_ready(wr_req_ready),
+                .wr_data_valid(wr_data_valid),
+                .wr_data(wr_data),
+                .wr_last(wr_last),
+                .wr_data_ready(wr_data_ready)
+            );
+        end
+    endgenerate
 
     axi_master_read #(
         .ADDR_W(ADDR_W),

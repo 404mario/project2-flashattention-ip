@@ -15,10 +15,11 @@ while adding optional bonus modes behind registers, parameters, or separate wrap
 | 4 | Padding mask | `VALID_LEN` masks invalid keys and zeroes invalid query rows. |
 | 5 | Other fixed-point formats | Compile-time Q6.10 and Q4.12 test/checker variants. |
 | 6 | Dropout | Deterministic post-softmax dropout with seed, threshold, and inverted scale registers. |
+| 7 | INT8/FP8 lower precision | INT8/Q4.4 external-memory mode plus FP8/E4M3 DMA-boundary conversion mode. |
 | 8 | AXI4-Stream interface | Additional `flash_attn_axis_top` wrapper; original DMA top remains available. |
 | 9 | DMA/task queue | `TASK_COUNT` and `TASK_STRIDE_BYTES` run multiple tasks from one START. |
 
-Items #1 and #7 are not claimed yet.
+Item #1 is not claimed.
 
 ## Verification Entry Points
 
@@ -38,6 +39,7 @@ Individual quick checks:
 ./sim/run_bonus_axis_stream_smoke.sh
 ./sim/run_bonus_dropout_smoke.sh
 ./sim/run_bonus_multi_head_smoke.sh
+./sim/run_bonus_lowprecision_int8_smoke.sh
 ```
 
 The default Q8.8 single-task path remains covered by `run_top_e2e_smoke.sh`; bonus modes are

@@ -16,11 +16,12 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int DOT_LANES       = 32;
     parameter int USE_CAUSAL_SKIP = 1;
     parameter int SOFTMAX_FRAC    = 16;
+    parameter int FP8_E4M3_MODE   = 0;
     parameter int VALID_LEN       = S_LEN;
     parameter int TASK_COUNT      = 1;
-    parameter int TASK_STRIDE_BYTES = S_LEN * D_MODEL * 2;
+    parameter int TASK_STRIDE_BYTES = S_LEN * D_MODEL * (DATA_W / 8);
     parameter int HEAD_COUNT      = 1;
-    parameter int HEAD_STRIDE_BYTES = S_LEN * D_MODEL * 2;
+    parameter int HEAD_STRIDE_BYTES = S_LEN * D_MODEL * (DATA_W / 8);
     parameter int DROPOUT_EN      = 0;
     parameter int DROPOUT_THRESHOLD = 0;
     parameter int DROPOUT_SEED    = 16'hace1;
@@ -31,7 +32,9 @@ module tb_flash_attn_top_e2e_smoke;
 
     localparam int ADDR_W         = 64;
     localparam int AXI_BYTES      = AXI_DATA_W / 8;
-    localparam int STRIDE_BYTES   = D_MODEL * 2;
+    localparam int DATA_BYTES     = DATA_W / 8;
+    localparam int AXI_LANES      = AXI_BYTES / DATA_BYTES;
+    localparam int STRIDE_BYTES   = D_MODEL * DATA_BYTES;
     localparam int NUM_ELEMS      = S_LEN * D_MODEL;
     localparam int TENSOR_BYTES   = S_LEN * STRIDE_BYTES;
     localparam int TASK_REGION_BYTES =
@@ -44,9 +47,11 @@ module tb_flash_attn_top_e2e_smoke;
     localparam int unsigned K_BASE = Q_BASE + TASK_REGION_BYTES + REGION_GAP;
     localparam int unsigned V_BASE = K_BASE + TASK_REGION_BYTES + REGION_GAP;
     localparam int unsigned O_BASE = V_BASE + TASK_REGION_BYTES + REGION_GAP;
-    localparam int O_INIT_PATTERN = 16'h5a5a;
+    localparam logic [DATA_W-1:0] O_INIT_PATTERN = {DATA_W{1'b1}};
     localparam int WEIGHT_FRAC    = 8;
     localparam int WEIGHT_ONE     = 1 << WEIGHT_FRAC;
+    localparam longint signed DATA_MAX = (64'sd1 <<< (DATA_W - 1)) - 1;
+    localparam longint signed DATA_MIN = -(64'sd1 <<< (DATA_W - 1));
 
     localparam logic [31:0] REG_CTRL         = 32'h00;
     localparam logic [31:0] REG_STATUS       = 32'h04;
@@ -133,7 +138,7 @@ module tb_flash_attn_top_e2e_smoke;
     wire                    m_axi_bready;
     wire                    irq;
 
-    logic [15:0] o_mem [0:TOTAL_O_ELEMS-1];
+    logic signed [DATA_W-1:0] o_mem [0:TOTAL_O_ELEMS-1];
     logic [31:0] status_value;
     logic [31:0] cycles_value;
     logic [31:0] rd_bytes_l;
@@ -146,15 +151,25 @@ module tb_flash_attn_top_e2e_smoke;
     int col;
     int changed_count;
     int progress_pct;
+    int task_iter;
+    int head_iter;
+    int init_idx;
+    int init_run_idx;
+    int signed init_q;
+    int signed init_k;
+    int signed init_v;
     int use_vector_files;
     string out_hex_path;
     string q_hex_path;
     string k_hex_path;
     string v_hex_path;
 
-    logic [15:0] q_vec_mem [0:NUM_ELEMS-1];
-    logic [15:0] k_vec_mem [0:NUM_ELEMS-1];
-    logic [15:0] v_vec_mem [0:NUM_ELEMS-1];
+    logic signed [DATA_W-1:0] q_vec_mem [0:NUM_ELEMS-1];
+    logic signed [DATA_W-1:0] k_vec_mem [0:NUM_ELEMS-1];
+    logic signed [DATA_W-1:0] v_vec_mem [0:NUM_ELEMS-1];
+    logic [DATA_W-1:0] q_src_mem [0:TOTAL_O_ELEMS-1];
+    logic [DATA_W-1:0] k_src_mem [0:TOTAL_O_ELEMS-1];
+    logic [DATA_W-1:0] v_src_mem [0:TOTAL_O_ELEMS-1];
 
     typedef enum logic [1:0] {
         RD_IDLE,
@@ -189,7 +204,8 @@ module tb_flash_attn_top_e2e_smoke;
         .USE_DOT_TREE(USE_DOT_TREE),
         .DOT_LANES(DOT_LANES),
         .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
-        .SOFTMAX_FRAC(SOFTMAX_FRAC)
+        .SOFTMAX_FRAC(SOFTMAX_FRAC),
+        .FP8_E4M3_MODE(FP8_E4M3_MODE)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -253,9 +269,9 @@ module tb_flash_attn_top_e2e_smoke;
             if (dut.o_valid || dut.o_ready || dut.wr_req_valid || dut.wr_data_valid ||
                 m_axi_awvalid || m_axi_wvalid || m_axi_bvalid || dut.core_done ||
                 dut.overall_done_pulse) begin
-                $display("MON t=%0t o_v=%0b o_r=%0b o_row=%0d core_done=%0b dma_state=%0d wr_req_v=%0b wr_req_r=%0b wr_data_v=%0b wr_data_r=%0b awv=%0b awr=%0b wv=%0b wr=%0b bv=%0b br=%0b overall_done=%0b",
+                $display("MON t=%0t o_v=%0b o_r=%0b o_row=%0d core_done=%0b wr_req_v=%0b wr_req_r=%0b wr_data_v=%0b wr_data_r=%0b awv=%0b awr=%0b wv=%0b wr=%0b bv=%0b br=%0b overall_done=%0b",
                          $time, dut.o_valid, dut.o_ready, dut.o_row, dut.core_done,
-                         dut.u_dma_controller.state_q, dut.wr_req_valid, dut.wr_req_ready,
+                         dut.wr_req_valid, dut.wr_req_ready,
                          dut.wr_data_valid, dut.wr_data_ready, m_axi_awvalid,
                          m_axi_awready, m_axi_wvalid, m_axi_wready, m_axi_bvalid,
                          m_axi_bready, dut.overall_done_pulse);
@@ -279,30 +295,19 @@ module tb_flash_attn_top_e2e_smoke;
                 $fflush();
             end
             if (dut.rd_data_valid && dut.rd_data_ready) begin
-                $display("DMA rd state=%0d data=%016h last=%0b",
-                         dut.u_dma_controller.state_q,
-                         dut.rd_data,
-                         dut.rd_last);
+                $display("DMA rd data=%016h last=%0b", dut.rd_data, dut.rd_last);
                 $fflush();
             end
             if (dut.q_data_valid && dut.q_data_ready) begin
-                $display("DMA q present q0=%0d q1=%0d buf0=%0d buf1=%0d",
-                         dut.q_data[0],
-                         dut.q_data[1],
-                         dut.u_dma_controller.q_buf[0],
-                         dut.u_dma_controller.q_buf[1]);
+                $display("DMA q present q0=%0d q1=%0d", dut.q_data[0], dut.q_data[1]);
                 $fflush();
             end
             if (dut.kv_data_valid && dut.kv_data_ready) begin
-                $display("DMA kv present k00=%0d k01=%0d v00=%0d v01=%0d kbuf00=%0d kbuf01=%0d vbuf00=%0d vbuf01=%0d",
+                $display("DMA kv present k00=%0d k01=%0d v00=%0d v01=%0d",
                          dut.k_tile[0][0],
                          dut.k_tile[0][1],
                          dut.v_tile[0][0],
-                         dut.v_tile[0][1],
-                         dut.u_dma_controller.k_buf[0][0],
-                         dut.u_dma_controller.k_buf[0][1],
-                         dut.u_dma_controller.v_buf[0][0],
-                         dut.u_dma_controller.v_buf[0][1]);
+                         dut.v_tile[0][1]);
                 $fflush();
             end
             if (dut.u_flash_core.state_q == 4'd8) begin
@@ -326,21 +331,31 @@ module tb_flash_attn_top_e2e_smoke;
         end
     end
 
+    function automatic int signed scale_pattern(input int signed value, input int shift);
+        begin
+            if (shift >= 0) begin
+                scale_pattern = value <<< shift;
+            end else begin
+                scale_pattern = value >>> (-shift);
+            end
+        end
+    endfunction
+
     function automatic int signed q_value(input int in_row, input int in_col);
         begin
-            q_value = ((((in_row * 3 + in_col * 5 + 7) % 17) - 8) <<< QK_PROC_SHIFT);
+            q_value = scale_pattern((((in_row * 3 + in_col * 5 + 7) % 17) - 8), QK_PROC_SHIFT);
         end
     endfunction
 
     function automatic int signed k_value(input int key_row, input int in_col);
         begin
-            k_value = ((((key_row * 5 + in_col * 7 + 11) % 19) - 9) <<< QK_PROC_SHIFT);
+            k_value = scale_pattern((((key_row * 5 + in_col * 7 + 11) % 19) - 9), QK_PROC_SHIFT);
         end
     endfunction
 
     function automatic int signed v_value(input int key_row, input int in_col);
         begin
-            v_value = ((((key_row * 7 + in_col * 3 + 5) % 23) - 11) <<< V_PROC_SHIFT);
+            v_value = scale_pattern((((key_row * 7 + in_col * 3 + 5) % 23) - 11), V_PROC_SHIFT);
         end
     endfunction
 
@@ -378,10 +393,10 @@ module tb_flash_attn_top_e2e_smoke;
 
     function automatic logic signed [DATA_W-1:0] saturate_to_data(input longint signed value);
         begin
-            if (value > 32767) begin
-                saturate_to_data = 16'sh7fff;
-            end else if (value < -32768) begin
-                saturate_to_data = 16'sh8000;
+            if (value > DATA_MAX) begin
+                saturate_to_data = DATA_MAX[DATA_W-1:0];
+            end else if (value < DATA_MIN) begin
+                saturate_to_data = DATA_MIN[DATA_W-1:0];
             end else begin
                 saturate_to_data = value[DATA_W-1:0];
             end
@@ -526,7 +541,7 @@ module tb_flash_attn_top_e2e_smoke;
             task_idx = task_index_from_addr(addr, base);
             head_idx = head_index_from_addr(addr, base);
             tensor_base = base + task_idx * TASK_STRIDE_BYTES + head_idx * HEAD_STRIDE_BYTES;
-            addr_to_elem = (addr - tensor_base) / 2;
+            addr_to_elem = (addr - tensor_base) / DATA_BYTES;
         end
     endfunction
 
@@ -536,17 +551,15 @@ module tb_flash_attn_top_e2e_smoke;
         end
     endfunction
 
-    function automatic logic [15:0] source_value(input int source, input int idx, input int in_task, input int in_head);
-        int r;
-        int c;
+    function automatic logic [DATA_W-1:0] source_value(input int source, input int idx, input int in_task, input int in_head);
+        int run_idx;
         begin
-            r = idx / D_MODEL;
-            c = idx % D_MODEL;
+            run_idx = run_index(in_task, in_head);
             case (source)
-                0: source_value = q_data_value(r, c, in_task, in_head) & 16'hffff;
-                1: source_value = k_data_value(r, c, in_task, in_head) & 16'hffff;
-                2: source_value = v_data_value(r, c, in_task, in_head) & 16'hffff;
-                default: source_value = 16'h0000;
+                0: source_value = q_src_mem[run_idx * NUM_ELEMS + idx];
+                1: source_value = k_src_mem[run_idx * NUM_ELEMS + idx];
+                2: source_value = v_src_mem[run_idx * NUM_ELEMS + idx];
+                default: source_value = '0;
             endcase
         end
     endfunction
@@ -559,28 +572,28 @@ module tb_flash_attn_top_e2e_smoke;
         int run_idx;
         begin
             word = '0;
-            for (int lane = 0; lane < AXI_BYTES / 2; lane = lane + 1) begin
+            for (int lane = 0; lane < AXI_LANES; lane = lane + 1) begin
                 if ((addr >= Q_BASE) && (addr < task_region_limit(Q_BASE))) begin
                     task_idx = task_index_from_addr(addr, Q_BASE);
                     head_idx = head_index_from_addr(addr, Q_BASE);
                     idx = addr_to_elem(addr, Q_BASE) + lane;
-                    word[lane*16 +: 16] = source_value(0, idx, task_idx, head_idx);
+                    word[lane*DATA_W +: DATA_W] = source_value(0, idx, task_idx, head_idx);
                 end else if ((addr >= K_BASE) && (addr < task_region_limit(K_BASE))) begin
                     task_idx = task_index_from_addr(addr, K_BASE);
                     head_idx = head_index_from_addr(addr, K_BASE);
                     idx = addr_to_elem(addr, K_BASE) + lane;
-                    word[lane*16 +: 16] = source_value(1, idx, task_idx, head_idx);
+                    word[lane*DATA_W +: DATA_W] = source_value(1, idx, task_idx, head_idx);
                 end else if ((addr >= V_BASE) && (addr < task_region_limit(V_BASE))) begin
                     task_idx = task_index_from_addr(addr, V_BASE);
                     head_idx = head_index_from_addr(addr, V_BASE);
                     idx = addr_to_elem(addr, V_BASE) + lane;
-                    word[lane*16 +: 16] = source_value(2, idx, task_idx, head_idx);
+                    word[lane*DATA_W +: DATA_W] = source_value(2, idx, task_idx, head_idx);
                 end else if ((addr >= O_BASE) && (addr < task_region_limit(O_BASE))) begin
                     task_idx = task_index_from_addr(addr, O_BASE);
                     head_idx = head_index_from_addr(addr, O_BASE);
                     run_idx = run_index(task_idx, head_idx);
                     idx = addr_to_elem(addr, O_BASE) + lane;
-                    word[lane*16 +: 16] = o_mem[run_idx * NUM_ELEMS + idx];
+                    word[lane*DATA_W +: DATA_W] = o_mem[run_idx * NUM_ELEMS + idx];
                 end
             end
             read_axi_word = word;
@@ -596,6 +609,7 @@ module tb_flash_attn_top_e2e_smoke;
         int task_idx;
         int head_idx;
         int run_idx;
+        bit lane_write;
         begin
             if ((addr < O_BASE) || (addr >= task_region_limit(O_BASE))) begin
                 $display("FAIL write outside O region addr=%0d", addr);
@@ -605,16 +619,20 @@ module tb_flash_attn_top_e2e_smoke;
             task_idx = task_index_from_addr(addr, O_BASE);
             head_idx = head_index_from_addr(addr, O_BASE);
             run_idx = run_index(task_idx, head_idx);
-            for (int lane = 0; lane < AXI_BYTES / 2; lane = lane + 1) begin
-                if (strb[lane * 2] || strb[lane * 2 + 1]) begin
+            for (int lane = 0; lane < AXI_LANES; lane = lane + 1) begin
+                lane_write = 1'b0;
+                for (int byte_idx = 0; byte_idx < DATA_BYTES; byte_idx = byte_idx + 1) begin
+                    lane_write |= strb[lane * DATA_BYTES + byte_idx];
+                end
+                if (lane_write) begin
                     idx = addr_to_elem(addr, O_BASE) + lane;
-                    o_mem[run_idx * NUM_ELEMS + idx] = data[lane*16 +: 16];
+                    o_mem[run_idx * NUM_ELEMS + idx] = data[lane*DATA_W +: DATA_W];
                 end
             end
             if (VERBOSE != 0) begin
-                $display("INFO AXI write addr=%0d data=%016h strb=%02h idx0=%0d dma_beat=%0d flat=%0h",
+                $display("INFO AXI write addr=%0d data=%016h strb=%02h idx0=%0d flat=%0h",
                          addr, data, strb, addr_to_elem(addr, O_BASE),
-                         dut.u_dma_controller.beat_idx_q, dut.o_data_flat);
+                         dut.o_data_flat);
                 $fflush();
             end
         end
@@ -867,8 +885,8 @@ module tb_flash_attn_top_e2e_smoke;
     endtask
 
     task automatic check_output_memory;
-        logic signed [15:0] got;
-        logic signed [15:0] exp;
+        logic signed [DATA_W-1:0] got;
+        logic signed [DATA_W-1:0] exp;
         int idx;
         int run_idx;
         begin
@@ -900,7 +918,11 @@ module tb_flash_attn_top_e2e_smoke;
                                     $fatal(1);
                                 end
                             end else if ((r == 0) && (DROPOUT_EN == 0)) begin
-                                exp = v_data_value(0, c, t, h);
+                                if (FP8_E4M3_MODE != 0) begin
+                                    exp = fp8_e4m3_pkg::q8_8_to_fp8_e4m3(v_data_value(0, c, t, h));
+                                end else begin
+                                    exp = v_data_value(0, c, t, h);
+                                end
                                 if (got !== exp) begin
                                     $display("FAIL TOP task%0d head%0d causal row0 O[0][%0d] got=%0d expected V[0][%0d]=%0d",
                                              t, h, c, got, c, exp);
@@ -922,6 +944,7 @@ module tb_flash_attn_top_e2e_smoke;
     task automatic dump_output_memory;
         int fd;
         int idx;
+        logic signed [15:0] dump_value;
         begin
             fd = $fopen(out_hex_path, "w");
             if (fd == 0) begin
@@ -930,7 +953,12 @@ module tb_flash_attn_top_e2e_smoke;
             end
 
             for (idx = 0; idx < TOTAL_O_ELEMS; idx = idx + 1) begin
-                $fwrite(fd, "%04h\n", o_mem[idx]);
+                if (FP8_E4M3_MODE != 0) begin
+                    dump_value = fp8_e4m3_pkg::fp8_e4m3_to_q8_8(o_mem[idx][7:0]);
+                end else begin
+                    dump_value = $signed(o_mem[idx]);
+                end
+                $fwrite(fd, "%04h\n", dump_value[15:0]);
             end
             $fclose(fd);
         end
@@ -991,6 +1019,29 @@ module tb_flash_attn_top_e2e_smoke;
             $readmemh(q_hex_path, q_vec_mem);
             $readmemh(k_hex_path, k_vec_mem);
             $readmemh(v_hex_path, v_vec_mem);
+        end
+
+        for (task_iter = 0; task_iter < TASK_COUNT; task_iter = task_iter + 1) begin
+            for (head_iter = 0; head_iter < HEAD_COUNT; head_iter = head_iter + 1) begin
+                init_run_idx = run_index(task_iter, head_iter);
+                for (row = 0; row < S_LEN; row = row + 1) begin
+                    for (col = 0; col < D_MODEL; col = col + 1) begin
+                        init_idx = init_run_idx * NUM_ELEMS + elem_index(row, col);
+                        init_q = q_data_value(row, col, task_iter, head_iter);
+                        init_k = k_data_value(row, col, task_iter, head_iter);
+                        init_v = v_data_value(row, col, task_iter, head_iter);
+                        if (FP8_E4M3_MODE != 0) begin
+                            q_src_mem[init_idx] = fp8_e4m3_pkg::q8_8_to_fp8_e4m3(init_q);
+                            k_src_mem[init_idx] = fp8_e4m3_pkg::q8_8_to_fp8_e4m3(init_k);
+                            v_src_mem[init_idx] = fp8_e4m3_pkg::q8_8_to_fp8_e4m3(init_v);
+                        end else begin
+                            q_src_mem[init_idx] = init_q[DATA_W-1:0];
+                            k_src_mem[init_idx] = init_k[DATA_W-1:0];
+                            v_src_mem[init_idx] = init_v[DATA_W-1:0];
+                        end
+                    end
+                end
+            end
         end
 
         if (VERBOSE != 0) begin
