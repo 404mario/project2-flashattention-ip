@@ -25,6 +25,10 @@ module flash_core #(
     input  logic signed [31:0] neg_large,
     input  logic signed [31:0] scale,
     input  logic [31:0] valid_len,
+    input  logic dropout_en,
+    input  logic [15:0] dropout_threshold,
+    input  logic [15:0] dropout_seed,
+    input  logic [15:0] dropout_scale_q8_8,
 
     output logic q_req_valid,
     output logic [$clog2(S_LEN)-1:0] q_req_row,
@@ -146,6 +150,9 @@ module flash_core #(
     logic [WEIGHT_W-1:0] new_weight_softmax;
     logic [WEIGHT_W-1:0] old_scale;
     logic [WEIGHT_W-1:0] new_weight;
+    logic [WEIGHT_W-1:0] acc_new_weight;
+    logic [15:0] dropout_rand;
+    logic dropout_keep;
     logic signed [ACC_W-1:0] m_update_q;
     logic [L_W-1:0] l_update_q;
     logic [WEIGHT_W-1:0] old_scale_update_q;
@@ -186,6 +193,45 @@ module flash_core #(
                 calc_kv_len = BK[LEN_W-1:0];
             end else begin
                 calc_kv_len = remaining[LEN_W-1:0];
+            end
+        end
+    endfunction
+
+    function automatic logic [15:0] dropout_rand16(
+        input logic [ROW_W-1:0] query_index,
+        input logic [ROW_W-1:0] key_index,
+        input logic [15:0] seed
+    );
+        logic [31:0] x;
+        begin
+            x = {seed, seed ^ 16'hace1};
+            x = x ^ ({16'd0, query_index} << 5);
+            x = x ^ ({16'd0, query_index} << 13);
+            x = x ^ ({16'd0, key_index} << 3);
+            x = x ^ ({16'd0, key_index} << 17);
+            x = x ^ (x << 7);
+            x = x ^ (x >> 9);
+            x = x ^ (x << 8);
+            dropout_rand16 = x[15:0] ^ x[31:16];
+        end
+    endfunction
+
+    function automatic logic [WEIGHT_W-1:0] dropout_weight(
+        input logic [WEIGHT_W-1:0] weight,
+        input logic keep,
+        input logic [15:0] scale_q8_8
+    );
+        logic [WEIGHT_W+16:0] scaled;
+        begin
+            if (!keep) begin
+                dropout_weight = '0;
+            end else begin
+                scaled = (weight * scale_q8_8 + 17'd128) >> 8;
+                if (|scaled[WEIGHT_W+16:WEIGHT_W]) begin
+                    dropout_weight = {WEIGHT_W{1'b1}};
+                end else begin
+                    dropout_weight = scaled[WEIGHT_W-1:0];
+                end
             end
         end
     endfunction
@@ -318,6 +364,11 @@ module flash_core #(
                           (scaled_product >>> SCALE_SHIFT);
     assign old_scale = old_scale_softmax;
     assign new_weight = new_weight_softmax;
+    assign dropout_rand = dropout_rand16(current_q_row, current_key_index, dropout_seed);
+    assign dropout_keep = !dropout_en || (dropout_rand >= dropout_threshold);
+    assign acc_new_weight = dropout_en ?
+                            dropout_weight(new_weight, dropout_keep, dropout_scale_q8_8) :
+                            new_weight;
 
     always_comb begin
         busy  = (state_q != ST_IDLE) && (state_q != ST_DONE);
@@ -486,7 +537,7 @@ module flash_core #(
                         m_update_q           <= m_softmax_next;
                         l_update_q           <= l_softmax_next;
                         old_scale_update_q   <= old_scale_softmax;
-                        new_weight_update_q  <= new_weight_softmax;
+                        new_weight_update_q  <= acc_new_weight;
                         state_q              <= ST_SCORE_UPDATE;
                     end
                 end

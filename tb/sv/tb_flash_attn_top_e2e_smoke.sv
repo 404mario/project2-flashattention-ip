@@ -19,6 +19,10 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int VALID_LEN       = S_LEN;
     parameter int TASK_COUNT      = 1;
     parameter int TASK_STRIDE_BYTES = S_LEN * D_MODEL * 2;
+    parameter int DROPOUT_EN      = 0;
+    parameter int DROPOUT_THRESHOLD = 0;
+    parameter int DROPOUT_SEED    = 16'hace1;
+    parameter int DROPOUT_SCALE_Q8_8 = 256;
     parameter int MAX_CYCLES      = 0;
     parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
@@ -60,6 +64,9 @@ module tb_flash_attn_top_e2e_smoke;
     localparam logic [31:0] REG_VALID_LEN    = 32'h54;
     localparam logic [31:0] REG_TASK_COUNT   = 32'h58;
     localparam logic [31:0] REG_TASK_STRIDE  = 32'h5c;
+    localparam logic [31:0] REG_DROPOUT_CFG  = 32'h60;
+    localparam logic [31:0] REG_DROPOUT_SEED = 32'h64;
+    localparam logic [31:0] REG_DROPOUT_SCALE = 32'h68;
 
     localparam logic [31:0] CTRL_START       = 32'h0000_0001;
     localparam logic [31:0] STATUS_BUSY      = 32'h0000_0001;
@@ -391,6 +398,7 @@ module tb_flash_attn_top_e2e_smoke;
         longint signed score;
         longint signed old_scale;
         longint signed new_weight;
+        longint signed acc_weight;
         begin
             if (in_row >= VALID_LEN) begin
                 expected_o = '0;
@@ -421,12 +429,42 @@ module tb_flash_attn_top_e2e_smoke;
                         l = ((l * old_scale) >>> WEIGHT_FRAC) + new_weight;
                     end
 
+                    acc_weight = dropout_acc_weight(in_row, key, new_weight);
                     acc = ((acc * old_scale) >>> WEIGHT_FRAC) +
-                          (new_weight * v_data_value(key, out_col));
+                          (acc_weight * v_data_value(key, out_col));
                 end
             end
 
             expected_o = (l == 0) ? '0 : saturate_to_data(acc / l);
+        end
+    endfunction
+
+    function automatic logic [15:0] dropout_rand16(input int in_row, input int key);
+        logic [31:0] x;
+        begin
+            x = {DROPOUT_SEED[15:0], DROPOUT_SEED[15:0] ^ 16'hace1};
+            x = x ^ (in_row[15:0] << 5);
+            x = x ^ (in_row[15:0] << 13);
+            x = x ^ (key[15:0] << 3);
+            x = x ^ (key[15:0] << 17);
+            x = x ^ (x << 7);
+            x = x ^ (x >> 9);
+            x = x ^ (x << 8);
+            dropout_rand16 = x[15:0] ^ x[31:16];
+        end
+    endfunction
+
+    function automatic longint signed dropout_acc_weight(input int in_row, input int key, input longint signed weight);
+        longint signed scaled;
+        begin
+            if (DROPOUT_EN == 0) begin
+                dropout_acc_weight = weight;
+            end else if (dropout_rand16(in_row, key) < DROPOUT_THRESHOLD[15:0]) begin
+                dropout_acc_weight = 0;
+            end else begin
+                scaled = ((weight * DROPOUT_SCALE_Q8_8) + 128) >>> 8;
+                dropout_acc_weight = scaled;
+            end
         end
     endfunction
 
@@ -766,6 +804,9 @@ module tb_flash_attn_top_e2e_smoke;
             axil_write(REG_VALID_LEN, VALID_LEN);
             axil_write(REG_TASK_COUNT, TASK_COUNT);
             axil_write(REG_TASK_STRIDE, TASK_STRIDE_BYTES);
+            axil_write(REG_DROPOUT_CFG, {DROPOUT_THRESHOLD[15:0], 15'd0, DROPOUT_EN[0]});
+            axil_write(REG_DROPOUT_SEED, DROPOUT_SEED[15:0]);
+            axil_write(REG_DROPOUT_SCALE, DROPOUT_SCALE_Q8_8[15:0]);
         end
     endtask
 
@@ -799,7 +840,7 @@ module tb_flash_attn_top_e2e_smoke;
                                          t, r, c, got);
                                 $fatal(1);
                             end
-                        end else if (r == 0) begin
+                        end else if ((r == 0) && (DROPOUT_EN == 0)) begin
                             exp = v_data_value(0, c);
                             if (got !== exp) begin
                                 $display("FAIL TOP task%0d causal row0 O[0][%0d] got=%0d expected V[0][%0d]=%0d",
@@ -832,6 +873,36 @@ module tb_flash_attn_top_e2e_smoke;
                 $fwrite(fd, "%04h\n", o_mem[idx]);
             end
             $fclose(fd);
+        end
+    endtask
+
+    task automatic check_dropout_mask_activity;
+        int kept_count;
+        int dropped_count;
+        begin
+            kept_count = 0;
+            dropped_count = 0;
+            if (DROPOUT_EN != 0) begin
+                for (int r = 0; r < S_LEN; r = r + 1) begin
+                    for (int key = 0; key < S_LEN; key = key + 1) begin
+                        if ((r < VALID_LEN) && (key < VALID_LEN) && (key <= r)) begin
+                            if (dropout_rand16(r, key) < DROPOUT_THRESHOLD[15:0]) begin
+                                dropped_count++;
+                            end else begin
+                                kept_count++;
+                            end
+                        end
+                    end
+                end
+                if ((kept_count == 0) || (dropped_count == 0)) begin
+                    $display("FAIL dropout mask inactive kept=%0d dropped=%0d threshold=%0d",
+                             kept_count, dropped_count, DROPOUT_THRESHOLD);
+                    $fatal(1);
+                end
+                $display("INFO dropout mask seed=%04h threshold=%0d scale_q8_8=%0d kept=%0d dropped=%0d",
+                         DROPOUT_SEED[15:0], DROPOUT_THRESHOLD, DROPOUT_SCALE_Q8_8,
+                         kept_count, dropped_count);
+            end
         end
     endtask
 
@@ -889,6 +960,7 @@ module tb_flash_attn_top_e2e_smoke;
         repeat (4) @(posedge clk);
 
         program_registers();
+        check_dropout_mask_activity();
         if (VERBOSE != 0) begin
             $display("INFO registers programmed");
             $fflush();

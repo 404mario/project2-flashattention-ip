@@ -197,11 +197,55 @@ def load_inputs(args):
     return build_inputs(args.s_len, args.d_model, args.frac_w)
 
 
-def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8, valid_len=None, frac_w=8):
+def dropout_rand16(row, key, seed):
+    x = ((int(seed) & 0xFFFF) << 16) | ((int(seed) ^ 0xACE1) & 0xFFFF)
+    x ^= (int(row) & 0xFFFF) << 5
+    x ^= (int(row) & 0xFFFF) << 13
+    x ^= (int(key) & 0xFFFF) << 3
+    x ^= (int(key) & 0xFFFF) << 17
+    x &= 0xFFFFFFFF
+    x ^= (x << 7) & 0xFFFFFFFF
+    x ^= (x >> 9)
+    x &= 0xFFFFFFFF
+    x ^= (x << 8) & 0xFFFFFFFF
+    x &= 0xFFFFFFFF
+    return ((x & 0xFFFF) ^ (x >> 16)) & 0xFFFF
+
+
+def dropout_keep(row, key, enabled=False, threshold=0, seed=0xACE1):
+    return (not enabled) or (dropout_rand16(row, key, seed) >= int(threshold))
+
+
+def dropout_weight(weight, row, key, enabled=False, threshold=0, seed=0xACE1, scale_q8_8=256, weight_w=16):
+    if not enabled:
+        return int(weight)
+    if not dropout_keep(row, key, enabled=True, threshold=threshold, seed=seed):
+        return 0
+    scaled = ((int(weight) * int(scale_q8_8)) + 128) >> 8
+    max_weight = (1 << weight_w) - 1
+    return min(max(scaled, 0), max_weight)
+
+
+def rtl_expected(
+    q,
+    k,
+    v,
+    bk,
+    scale_q8_8,
+    causal=True,
+    softmax_frac=8,
+    valid_len=None,
+    frac_w=8,
+    dropout_enabled=False,
+    dropout_threshold=0,
+    dropout_seed=0xACE1,
+    dropout_scale_q8_8=256,
+):
     s_len, d_model = q.shape
     out = np.zeros((s_len, d_model), dtype=np.int64)
     weight_frac = softmax_frac
     weight_one = 1 << weight_frac
+    weight_w = 18 if softmax_frac > 8 else 16
     scale_shift = (3 * frac_w) - softmax_frac
     valid_len = s_len if valid_len is None else max(0, min(int(valid_len), s_len))
 
@@ -249,7 +293,17 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8, valid_len
                         new_weight = exp_approx_interp(score - m_state, softmax_frac, weight_frac)
                     l_state = ((l_state * old_scale) >> weight_frac) + new_weight
 
-                acc = ((acc * old_scale) >> weight_frac) + (new_weight * v[key])
+                acc_weight = dropout_weight(
+                    new_weight,
+                    row,
+                    key,
+                    enabled=dropout_enabled,
+                    threshold=dropout_threshold,
+                    seed=dropout_seed,
+                    scale_q8_8=dropout_scale_q8_8,
+                    weight_w=weight_w,
+                )
+                acc = ((acc * old_scale) >> weight_frac) + (acc_weight * v[key])
 
         for d in range(d_model):
             out[row, d] = normalize_approx(int(acc[d]), int(l_state))
@@ -257,7 +311,18 @@ def rtl_expected(q, k, v, bk, scale_q8_8, causal=True, softmax_frac=8, valid_len
     return out
 
 
-def fp32_expected(q, k, v, causal=True, valid_len=None, frac_w=8):
+def fp32_expected(
+    q,
+    k,
+    v,
+    causal=True,
+    valid_len=None,
+    frac_w=8,
+    dropout_enabled=False,
+    dropout_threshold=0,
+    dropout_seed=0xACE1,
+    dropout_scale_q8_8=256,
+):
     scale = float(1 << frac_w)
     qf = q.astype(np.float64) / scale
     kf = k.astype(np.float64) / scale
@@ -274,6 +339,19 @@ def fp32_expected(q, k, v, causal=True, valid_len=None, frac_w=8):
     scores = scores - np.max(scores, axis=1, keepdims=True)
     probs = np.exp(scores)
     probs = probs / np.sum(probs, axis=1, keepdims=True)
+    if dropout_enabled:
+        keep = np.zeros_like(probs)
+        for row in range(s_len):
+            for key in range(s_len):
+                if row < valid_len and key < valid_len and (not causal or key <= row):
+                    keep[row, key] = 1.0 if dropout_keep(
+                        row,
+                        key,
+                        enabled=True,
+                        threshold=dropout_threshold,
+                        seed=dropout_seed,
+                    ) else 0.0
+        probs = probs * keep * (float(dropout_scale_q8_8) / 256.0)
     if valid_len < s_len:
         probs[valid_len:, :] = 0.0
     outf = probs @ vf
@@ -321,6 +399,10 @@ def main():
     parser.add_argument("--golden-hex", help="Optional supplied output golden hex file")
     parser.add_argument("--max-mae", type=float, help="Fail if FP32 MAE exceeds this threshold")
     parser.add_argument("--max-maxe", type=float, help="Fail if FP32 MaxE exceeds this threshold")
+    parser.add_argument("--dropout-en", action="store_true", help="Enable deterministic dropout in the RTL/FP32 mirrors")
+    parser.add_argument("--dropout-threshold", type=int, default=0)
+    parser.add_argument("--dropout-seed", type=lambda x: int(x, 0), default=0xACE1)
+    parser.add_argument("--dropout-scale-q8-8", type=int, default=256)
     args = parser.parse_args()
 
     hex_path = Path(args.hex)
@@ -338,6 +420,10 @@ def main():
         softmax_frac=args.softmax_frac,
         valid_len=args.valid_len,
         frac_w=args.frac_w,
+        dropout_enabled=args.dropout_en,
+        dropout_threshold=args.dropout_threshold,
+        dropout_seed=args.dropout_seed,
+        dropout_scale_q8_8=args.dropout_scale_q8_8,
     )
     _, max_err = report("RTL output vs RTL fixed-point mirror", got, expected_rtl, frac_w=args.frac_w)
     if max_err != 0:
@@ -348,8 +434,20 @@ def main():
         report("RTL output vs supplied golden_o.hex", got, supplied_golden, frac_w=args.frac_w)
 
     if args.check_fp32:
-        expected_fp32 = fp32_expected(q, k, v, causal=causal, valid_len=args.valid_len, frac_w=args.frac_w)
-        mae, maxe = report("RTL output vs FP32 softmax golden", got, expected_fp32, frac_w=args.frac_w)
+        expected_fp32 = fp32_expected(
+            q,
+            k,
+            v,
+            causal=causal,
+            valid_len=args.valid_len,
+            frac_w=args.frac_w,
+            dropout_enabled=args.dropout_en,
+            dropout_threshold=args.dropout_threshold,
+            dropout_seed=args.dropout_seed,
+            dropout_scale_q8_8=args.dropout_scale_q8_8,
+        )
+        fp32_name = "RTL output vs FP32 dropout softmax golden" if args.dropout_en else "RTL output vs FP32 softmax golden"
+        mae, maxe = report(fp32_name, got, expected_fp32, frac_w=args.frac_w)
         if args.max_mae is not None and mae > args.max_mae:
             print(f"FAIL FP32 MAE {mae:.6f} exceeded threshold {args.max_mae:.6f}")
             raise SystemExit(1)

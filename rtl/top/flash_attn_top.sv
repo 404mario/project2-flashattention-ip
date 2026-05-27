@@ -87,6 +87,10 @@ module flash_attn_top #(
     logic [31:0] valid_len;
     logic [31:0] task_count;
     logic [31:0] task_stride_bytes;
+    logic dropout_en;
+    logic [15:0] dropout_threshold;
+    logic [15:0] dropout_seed;
+    logic [15:0] dropout_scale_q8_8;
     logic [31:0] cycle_count_q;
     logic [63:0] rd_bytes_count_q;
     logic [63:0] wr_bytes_count_q;
@@ -304,6 +308,10 @@ module flash_attn_top #(
         .valid_len(valid_len),
         .task_count(task_count),
         .task_stride_bytes(task_stride_bytes),
+        .dropout_en(dropout_en),
+        .dropout_threshold(dropout_threshold),
+        .dropout_seed(dropout_seed),
+        .dropout_scale_q8_8(dropout_scale_q8_8),
         .busy(overall_busy),
         .done(overall_done_pulse),
         .error(overall_error),
@@ -336,6 +344,10 @@ module flash_attn_top #(
         .neg_large(neg_large),
         .scale(scale),
         .valid_len(valid_len),
+        .dropout_en(dropout_en),
+        .dropout_threshold(dropout_threshold),
+        .dropout_seed(dropout_seed),
+        .dropout_scale_q8_8(dropout_scale_q8_8),
         .q_req_valid(q_req_valid),
         .q_req_row(q_req_row),
         .q_req_ready(q_req_ready),
