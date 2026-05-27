@@ -26,6 +26,7 @@ Acceptance thresholds:
 - Bonus 3, configurable sequence length: compile-time `S_LEN` is verified through independent top E2E smoke cases with S=64 and S=128.
 - Bonus 4, padding mask: `VALID_LEN <= S_LEN` masks invalid K/V tokens and zeroes invalid output rows. Default `VALID_LEN=S_LEN` preserves baseline behavior.
 - Bonus 5, additional fixed-point formats: Q6.10 and Q4.12 smoke regressions reuse the same AXI-Lite/DMA flow through parameterized testbench/checker paths. They do not change default Q8.8 baseline behavior.
+- Bonus 9, lightweight task queue: `TASK_COUNT` and `TASK_STRIDE` registers chain multiple independent tensor regions through the same top-level DMA/control path. Default `TASK_COUNT=1` should preserve the single-task baseline path.
 
 ## Top Smoke Results
 
@@ -36,7 +37,7 @@ Command:
 ./sim/run_top_e2e_smoke.sh
 ```
 
-Latest local result after porting Bonus 4 and Bonus 5:
+Latest local result after porting Bonus 4, Bonus 5, and Bonus 9:
 
 | Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | FP32 MAE | FP32 MaxE |
 |---|---:|---|---|---:|---:|---:|---:|---:|
@@ -47,7 +48,7 @@ Latest local result after porting Bonus 4 and Bonus 5:
 | Q4.12 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=12, VALID_LEN=16 | PASS | 1388 | 1536 | 256 | 0.000053 | 0.000244 |
 | Q8.8 medium top E2E | S=32,D=16,BK=8,BQ=8 | VALID_LEN=32 | PASS | 4780 | 6144 | 1024 | 0.000038 | 0.003906 |
 
-Default Q8.8 small/medium cycle counts match the PPA skeleton after the bonus ports.
+Default Q8.8 small/medium cycle counts match the PPA skeleton after task queue was added.
 
 ## Configurable Sequence Results
 
@@ -66,3 +67,20 @@ Latest local result after porting Bonus 3:
 
 This supports the Bonus 3 claim as compile-time configurable `S_LEN`; it does not claim a
 full S=512,D=64 run.
+
+## Task Queue Results
+
+Command:
+
+```bash
+bash ./sim/run_bonus_task_queue_smoke.sh
+```
+
+Latest local result after porting Bonus 9:
+
+| Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES |
+|---|---:|---|---|---:|---:|---:|
+| Task queue smoke | S=8,D=8,BK=4,BQ=4 | TASK_COUNT=2, TASK_STRIDE_BYTES=128 | PASS | 934 | 1024 | 256 |
+
+The single-task default path is still covered by `run_top_e2e_smoke.sh`, where Q8.8
+`S=8` remains 456 cycles and `S=32` remains 4780 cycles.

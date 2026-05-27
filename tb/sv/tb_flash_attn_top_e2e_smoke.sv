@@ -17,6 +17,8 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int USE_CAUSAL_SKIP = 1;
     parameter int SOFTMAX_FRAC    = 16;
     parameter int VALID_LEN       = S_LEN;
+    parameter int TASK_COUNT      = 1;
+    parameter int TASK_STRIDE_BYTES = S_LEN * D_MODEL * 2;
     parameter int MAX_CYCLES      = 0;
     parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
@@ -26,6 +28,7 @@ module tb_flash_attn_top_e2e_smoke;
     localparam int STRIDE_BYTES   = D_MODEL * 2;
     localparam int NUM_ELEMS      = S_LEN * D_MODEL;
     localparam int TENSOR_BYTES   = S_LEN * STRIDE_BYTES;
+    localparam int TOTAL_O_ELEMS  = NUM_ELEMS * TASK_COUNT;
     localparam int REGION_GAP     = 4096;
     localparam int unsigned Q_BASE = 32'h0000_0000;
     localparam int unsigned K_BASE = Q_BASE + TENSOR_BYTES + REGION_GAP;
@@ -55,6 +58,8 @@ module tb_flash_attn_top_e2e_smoke;
     localparam logic [31:0] REG_WR_BYTES_L   = 32'h4c;
     localparam logic [31:0] REG_WR_BYTES_H   = 32'h50;
     localparam logic [31:0] REG_VALID_LEN    = 32'h54;
+    localparam logic [31:0] REG_TASK_COUNT   = 32'h58;
+    localparam logic [31:0] REG_TASK_STRIDE  = 32'h5c;
 
     localparam logic [31:0] CTRL_START       = 32'h0000_0001;
     localparam logic [31:0] STATUS_BUSY      = 32'h0000_0001;
@@ -113,7 +118,7 @@ module tb_flash_attn_top_e2e_smoke;
     wire                    m_axi_bready;
     wire                    irq;
 
-    logic [15:0] o_mem [0:NUM_ELEMS-1];
+    logic [15:0] o_mem [0:TOTAL_O_ELEMS-1];
     logic [31:0] status_value;
     logic [31:0] cycles_value;
     logic [31:0] rd_bytes_l;
@@ -431,9 +436,25 @@ module tb_flash_attn_top_e2e_smoke;
         end
     endfunction
 
-    function automatic int addr_to_elem(input int unsigned addr, input int unsigned base);
+    function automatic int task_region_limit(input int unsigned base);
         begin
-            addr_to_elem = (addr - base) / 2;
+            task_region_limit = base + ((TASK_COUNT - 1) * TASK_STRIDE_BYTES) + TENSOR_BYTES;
+        end
+    endfunction
+
+    function automatic int task_index_from_addr(input int unsigned addr, input int unsigned base);
+        begin
+            task_index_from_addr = (addr - base) / TASK_STRIDE_BYTES;
+        end
+    endfunction
+
+    function automatic int addr_to_elem(input int unsigned addr, input int unsigned base);
+        int task_idx;
+        int task_base;
+        begin
+            task_idx = task_index_from_addr(addr, base);
+            task_base = base + task_idx * TASK_STRIDE_BYTES;
+            addr_to_elem = (addr - task_base) / 2;
         end
     endfunction
 
@@ -455,21 +476,23 @@ module tb_flash_attn_top_e2e_smoke;
     function automatic logic [AXI_DATA_W-1:0] read_axi_word(input int unsigned addr);
         logic [AXI_DATA_W-1:0] word;
         int idx;
+        int task_idx;
         begin
             word = '0;
             for (int lane = 0; lane < AXI_BYTES / 2; lane = lane + 1) begin
-                if ((addr >= Q_BASE) && (addr < Q_BASE + TENSOR_BYTES)) begin
+                if ((addr >= Q_BASE) && (addr < task_region_limit(Q_BASE))) begin
                     idx = addr_to_elem(addr, Q_BASE) + lane;
                     word[lane*16 +: 16] = source_value(0, idx);
-                end else if ((addr >= K_BASE) && (addr < K_BASE + TENSOR_BYTES)) begin
+                end else if ((addr >= K_BASE) && (addr < task_region_limit(K_BASE))) begin
                     idx = addr_to_elem(addr, K_BASE) + lane;
                     word[lane*16 +: 16] = source_value(1, idx);
-                end else if ((addr >= V_BASE) && (addr < V_BASE + TENSOR_BYTES)) begin
+                end else if ((addr >= V_BASE) && (addr < task_region_limit(V_BASE))) begin
                     idx = addr_to_elem(addr, V_BASE) + lane;
                     word[lane*16 +: 16] = source_value(2, idx);
-                end else if ((addr >= O_BASE) && (addr < O_BASE + TENSOR_BYTES)) begin
+                end else if ((addr >= O_BASE) && (addr < task_region_limit(O_BASE))) begin
+                    task_idx = task_index_from_addr(addr, O_BASE);
                     idx = addr_to_elem(addr, O_BASE) + lane;
-                    word[lane*16 +: 16] = o_mem[idx];
+                    word[lane*16 +: 16] = o_mem[task_idx * NUM_ELEMS + idx];
                 end
             end
             read_axi_word = word;
@@ -482,16 +505,18 @@ module tb_flash_attn_top_e2e_smoke;
         input logic [AXI_DATA_W/8-1:0] strb
     );
         int idx;
+        int task_idx;
         begin
-            if ((addr < O_BASE) || (addr >= O_BASE + TENSOR_BYTES)) begin
+            if ((addr < O_BASE) || (addr >= task_region_limit(O_BASE))) begin
                 $display("FAIL write outside O region addr=%0d", addr);
                 $fatal(1);
             end
 
+            task_idx = task_index_from_addr(addr, O_BASE);
             for (int lane = 0; lane < AXI_BYTES / 2; lane = lane + 1) begin
                 if (strb[lane * 2] || strb[lane * 2 + 1]) begin
                     idx = addr_to_elem(addr, O_BASE) + lane;
-                    o_mem[idx] = data[lane*16 +: 16];
+                    o_mem[task_idx * NUM_ELEMS + idx] = data[lane*16 +: 16];
                 end
             end
             if (VERBOSE != 0) begin
@@ -739,6 +764,8 @@ module tb_flash_attn_top_e2e_smoke;
             axil_write(REG_NEG_LARGE, 32'hffff_8000);
             axil_write(REG_SCALE, SCALE_Q8_8);
             axil_write(REG_VALID_LEN, VALID_LEN);
+            axil_write(REG_TASK_COUNT, TASK_COUNT);
+            axil_write(REG_TASK_STRIDE, TASK_STRIDE_BYTES);
         end
     endtask
 
@@ -748,42 +775,44 @@ module tb_flash_attn_top_e2e_smoke;
         int idx;
         begin
             changed_count = 0;
-            for (int r = 0; r < S_LEN; r = r + 1) begin
-                for (int c = 0; c < D_MODEL; c = c + 1) begin
-                    idx = elem_index(r, c);
-                    got = o_mem[idx];
-                    if ((^got) === 1'bx) begin
-                        $display("FAIL O[%0d][%0d] is X/Z", r, c);
-                        $fatal(1);
-                    end
-                    changed_count++;
-                    if (CHECK_BITEXACT != 0) begin
-                        exp = expected_o(r, c);
-                        if (got !== exp) begin
-                            $display("FAIL TOP O[%0d][%0d] got=%0d hex=%04h expected=%0d hex=%04h",
-                                     r, c, got, got, exp, exp);
+            for (int t = 0; t < TASK_COUNT; t = t + 1) begin
+                for (int r = 0; r < S_LEN; r = r + 1) begin
+                    for (int c = 0; c < D_MODEL; c = c + 1) begin
+                        idx = (t * NUM_ELEMS) + elem_index(r, c);
+                        got = o_mem[idx];
+                        if ((^got) === 1'bx) begin
+                            $display("FAIL task%0d O[%0d][%0d] is X/Z", t, r, c);
                             $fatal(1);
                         end
-                    end else if (r >= VALID_LEN) begin
-                        exp = '0;
-                        if (got !== exp) begin
-                            $display("FAIL TOP padding row O[%0d][%0d] got=%0d expected zero",
-                                     r, c, got);
-                            $fatal(1);
-                        end
-                    end else if (r == 0) begin
-                        exp = v_data_value(0, c);
-                        if (got !== exp) begin
-                            $display("FAIL TOP causal row0 O[0][%0d] got=%0d expected V[0][%0d]=%0d",
-                                     c, got, c, exp);
-                            $fatal(1);
+                        changed_count++;
+                        if (CHECK_BITEXACT != 0) begin
+                            exp = expected_o(r, c);
+                            if (got !== exp) begin
+                                $display("FAIL TOP task%0d O[%0d][%0d] got=%0d hex=%04h expected=%0d hex=%04h",
+                                         t, r, c, got, got, exp, exp);
+                                $fatal(1);
+                            end
+                        end else if (r >= VALID_LEN) begin
+                            exp = '0;
+                            if (got !== exp) begin
+                                $display("FAIL TOP task%0d padding row O[%0d][%0d] got=%0d expected zero",
+                                         t, r, c, got);
+                                $fatal(1);
+                            end
+                        end else if (r == 0) begin
+                            exp = v_data_value(0, c);
+                            if (got !== exp) begin
+                                $display("FAIL TOP task%0d causal row0 O[0][%0d] got=%0d expected V[0][%0d]=%0d",
+                                         t, c, got, c, exp);
+                                $fatal(1);
+                            end
                         end
                     end
                 end
             end
 
-            if (changed_count != NUM_ELEMS) begin
-                $display("FAIL changed output count=%0d expected=%0d", changed_count, NUM_ELEMS);
+            if (changed_count != TOTAL_O_ELEMS) begin
+                $display("FAIL changed output count=%0d expected=%0d", changed_count, TOTAL_O_ELEMS);
                 $fatal(1);
             end
         end
@@ -799,7 +828,7 @@ module tb_flash_attn_top_e2e_smoke;
                 $fatal(1);
             end
 
-            for (idx = 0; idx < NUM_ELEMS; idx = idx + 1) begin
+            for (idx = 0; idx < TOTAL_O_ELEMS; idx = idx + 1) begin
                 $fwrite(fd, "%04h\n", o_mem[idx]);
             end
             $fclose(fd);

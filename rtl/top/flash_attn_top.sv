@@ -85,6 +85,8 @@ module flash_attn_top #(
     logic signed [31:0] neg_large;
     logic signed [31:0] scale;
     logic [31:0] valid_len;
+    logic [31:0] task_count;
+    logic [31:0] task_stride_bytes;
     logic [31:0] cycle_count_q;
     logic [63:0] rd_bytes_count_q;
     logic [63:0] wr_bytes_count_q;
@@ -150,6 +152,17 @@ module flash_attn_top #(
     logic work_rst_n;
     logic run_active_q;
     logic core_done_seen_q;
+    logic task_continue_pulse_q;
+    logic task_start_pulse;
+    logic [31:0] task_index_q;
+    logic [31:0] task_count_eff;
+    logic [63:0] task_offset_q;
+    logic [63:0] q_base_eff;
+    logic [63:0] k_base_eff;
+    logic [63:0] v_base_eff;
+    logic [63:0] o_base_eff;
+    logic current_task_done_pulse;
+    logic last_task_done_pulse;
     logic overall_busy;
     logic overall_done_pulse;
     logic overall_error;
@@ -160,8 +173,17 @@ module flash_attn_top #(
     assign irq        = irq_int;
 
     assign overall_busy       = run_active_q || core_busy || dma_busy || rd_busy || wr_busy;
-    assign overall_done_pulse = run_active_q && core_done_seen_q && !dma_busy && !rd_busy && !wr_busy;
+    assign current_task_done_pulse = run_active_q && core_done_seen_q && !dma_busy && !rd_busy && !wr_busy;
+    assign last_task_done_pulse = current_task_done_pulse &&
+                                  ((task_index_q + 32'd1) >= task_count_eff);
+    assign overall_done_pulse = last_task_done_pulse;
     assign overall_error      = core_error || dma_error || rd_error || wr_error;
+    assign task_count_eff     = (task_count == 32'd0) ? 32'd1 : task_count;
+    assign q_base_eff         = q_base + task_offset_q;
+    assign k_base_eff         = k_base + task_offset_q;
+    assign v_base_eff         = v_base + task_offset_q;
+    assign o_base_eff         = o_base + task_offset_q;
+    assign task_start_pulse   = start_pulse || task_continue_pulse_q;
 
     always_comb begin
         for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
@@ -182,23 +204,43 @@ module flash_attn_top #(
         if (!rst_n) begin
             run_active_q     <= 1'b0;
             core_done_seen_q <= 1'b0;
+            task_continue_pulse_q <= 1'b0;
+            task_index_q     <= 32'd0;
+            task_offset_q    <= 64'd0;
             cycle_count_q    <= 32'd0;
             rd_bytes_count_q <= 64'd0;
             wr_bytes_count_q <= 64'd0;
         end else if (soft_reset) begin
             run_active_q     <= 1'b0;
             core_done_seen_q <= 1'b0;
+            task_continue_pulse_q <= 1'b0;
+            task_index_q     <= 32'd0;
+            task_offset_q    <= 64'd0;
             cycle_count_q    <= 32'd0;
             rd_bytes_count_q <= 64'd0;
             wr_bytes_count_q <= 64'd0;
         end else begin
+            task_continue_pulse_q <= 1'b0;
+
             if (start_pulse) begin
                 run_active_q     <= 1'b1;
                 core_done_seen_q <= 1'b0;
+                task_index_q     <= 32'd0;
+                task_offset_q    <= 64'd0;
                 cycle_count_q    <= 32'd0;
                 rd_bytes_count_q <= 64'd0;
                 wr_bytes_count_q <= 64'd0;
             end else begin
+                if (current_task_done_pulse) begin
+                    core_done_seen_q <= 1'b0;
+                    if (last_task_done_pulse) begin
+                        run_active_q <= 1'b0;
+                    end else begin
+                        task_index_q <= task_index_q + 32'd1;
+                        task_offset_q <= task_offset_q + {32'd0, task_stride_bytes};
+                        task_continue_pulse_q <= 1'b1;
+                    end
+                end
                 if (overall_done_pulse) begin
                     run_active_q <= 1'b0;
                 end
@@ -260,6 +302,8 @@ module flash_attn_top #(
         .neg_large(neg_large),
         .scale(scale),
         .valid_len(valid_len),
+        .task_count(task_count),
+        .task_stride_bytes(task_stride_bytes),
         .busy(overall_busy),
         .done(overall_done_pulse),
         .error(overall_error),
@@ -284,7 +328,7 @@ module flash_attn_top #(
     ) u_flash_core (
         .clk(clk),
         .rst_n(work_rst_n),
-        .start(start_pulse),
+        .start(task_start_pulse),
         .busy(core_busy),
         .done(core_done),
         .error(core_error),
@@ -323,14 +367,14 @@ module flash_attn_top #(
     ) u_dma_controller (
         .clk(clk),
         .rst_n(work_rst_n),
-        .start(start_pulse),
+        .start(task_start_pulse),
         .busy(dma_busy),
         .done(dma_done),
         .error(dma_error),
-        .q_base(q_base),
-        .k_base(k_base),
-        .v_base(v_base),
-        .o_base(o_base),
+        .q_base(q_base_eff),
+        .k_base(k_base_eff),
+        .v_base(v_base_eff),
+        .o_base(o_base_eff),
         .stride_bytes(stride_bytes),
         .q_req_valid(q_req_valid),
         .q_req_row(q_req_row),

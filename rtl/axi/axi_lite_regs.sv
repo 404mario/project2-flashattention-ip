@@ -45,6 +45,8 @@ module axi_lite_regs #(
     output logic signed [31:0]   neg_large,
     output logic signed [31:0]   scale,
     output logic [31:0]          valid_len,
+    output logic [31:0]          task_count,
+    output logic [31:0]          task_stride_bytes,
 
     input  logic                 busy,
     input  logic                 done,
@@ -76,11 +78,15 @@ module axi_lite_regs #(
     localparam logic [ADDR_W-1:0] REG_WR_BYTES_L   = 'h4C;
     localparam logic [ADDR_W-1:0] REG_WR_BYTES_H   = 'h50;
     localparam logic [ADDR_W-1:0] REG_VALID_LEN    = 'h54;
+    localparam logic [ADDR_W-1:0] REG_TASK_COUNT   = 'h58;
+    localparam logic [ADDR_W-1:0] REG_TASK_STRIDE  = 'h5C;
 
     localparam logic signed [31:0] DEFAULT_NEG_LARGE = -32'sd32768;
     localparam logic signed [31:0] DEFAULT_SCALE     =  32'sd32; // 0.125 in Q8.8
     localparam logic [31:0]        DEFAULT_STRIDE    = D_MODEL * 2;
     localparam logic [31:0]        DEFAULT_VALID_LEN = S_LEN;
+    localparam logic [31:0]        DEFAULT_TASK_COUNT = 32'd1;
+    localparam logic [31:0]        DEFAULT_TASK_STRIDE = S_LEN * D_MODEL * 2;
 
     logic [ADDR_W-1:0] awaddr_q;
     logic [DATA_W-1:0] wdata_q;
@@ -100,6 +106,8 @@ module axi_lite_regs #(
     logic signed [31:0] neg_large_q;
     logic signed [31:0] scale_q;
     logic [31:0] valid_len_q;
+    logic [31:0] task_count_q;
+    logic [31:0] task_stride_bytes_q;
 
     logic done_sticky_q;
     logic error_sticky_q;
@@ -138,6 +146,8 @@ module axi_lite_regs #(
     assign neg_large   = neg_large_q;
     assign scale       = scale_q;
     assign valid_len   = valid_len_q;
+    assign task_count  = task_count_q;
+    assign task_stride_bytes = task_stride_bytes_q;
     assign irq         = irq_en_q && done_sticky_q;
 
     always @* begin
@@ -171,6 +181,8 @@ module axi_lite_regs #(
             REG_WR_BYTES_L:    s_axil_rdata = wr_bytes[31:0];
             REG_WR_BYTES_H:    s_axil_rdata = wr_bytes[63:32];
             REG_VALID_LEN:     s_axil_rdata = valid_len_q;
+            REG_TASK_COUNT:    s_axil_rdata = task_count_q;
+            REG_TASK_STRIDE:   s_axil_rdata = task_stride_bytes_q;
             default:           s_axil_rdata = '0;
         endcase
     end
@@ -199,6 +211,8 @@ module axi_lite_regs #(
             neg_large_q     <= DEFAULT_NEG_LARGE;
             scale_q         <= DEFAULT_SCALE;
             valid_len_q     <= DEFAULT_VALID_LEN;
+            task_count_q    <= DEFAULT_TASK_COUNT;
+            task_stride_bytes_q <= DEFAULT_TASK_STRIDE;
             done_sticky_q   <= 1'b0;
             error_sticky_q  <= 1'b0;
         end else begin
@@ -284,6 +298,12 @@ module axi_lite_regs #(
                     end
                     REG_VALID_LEN: begin
                         valid_len_q <= apply_wstrb32(valid_len_q, wdata_q, wstrb_q);
+                    end
+                    REG_TASK_COUNT: begin
+                        task_count_q <= apply_wstrb32(task_count_q, wdata_q, wstrb_q);
+                    end
+                    REG_TASK_STRIDE: begin
+                        task_stride_bytes_q <= apply_wstrb32(task_stride_bytes_q, wdata_q, wstrb_q);
                     end
                     default: begin
                     end
