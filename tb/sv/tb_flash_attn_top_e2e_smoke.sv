@@ -16,6 +16,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int DOT_LANES       = 32;
     parameter int USE_CAUSAL_SKIP = 1;
     parameter int SOFTMAX_FRAC    = 16;
+    parameter int VALID_LEN       = S_LEN;
     parameter int MAX_CYCLES      = 0;
     parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
@@ -53,6 +54,7 @@ module tb_flash_attn_top_e2e_smoke;
     localparam logic [31:0] REG_RD_BYTES_H   = 32'h48;
     localparam logic [31:0] REG_WR_BYTES_L   = 32'h4c;
     localparam logic [31:0] REG_WR_BYTES_H   = 32'h50;
+    localparam logic [31:0] REG_VALID_LEN    = 32'h54;
 
     localparam logic [31:0] CTRL_START       = 32'h0000_0001;
     localparam logic [31:0] STATUS_BUSY      = 32'h0000_0001;
@@ -383,12 +385,17 @@ module tb_flash_attn_top_e2e_smoke;
         longint signed old_scale;
         longint signed new_weight;
         begin
+            if (in_row >= VALID_LEN) begin
+                expected_o = '0;
+                return expected_o;
+            end
+
             m = 0;
             l = 0;
             acc = 0;
 
             for (int key = 0; key < S_LEN; key = key + 1) begin
-                if (key <= in_row) begin
+                if ((key < VALID_LEN) && (key <= in_row)) begin
                     score = scaled_score(in_row, key);
 
                     if (l == 0) begin
@@ -729,6 +736,7 @@ module tb_flash_attn_top_e2e_smoke;
             axil_write(REG_STRIDE_BYTES, STRIDE_BYTES);
             axil_write(REG_NEG_LARGE, 32'hffff_8000);
             axil_write(REG_SCALE, SCALE_Q8_8);
+            axil_write(REG_VALID_LEN, VALID_LEN);
         end
     endtask
 
@@ -752,6 +760,13 @@ module tb_flash_attn_top_e2e_smoke;
                         if (got !== exp) begin
                             $display("FAIL TOP O[%0d][%0d] got=%0d hex=%04h expected=%0d hex=%04h",
                                      r, c, got, got, exp, exp);
+                            $fatal(1);
+                        end
+                    end else if (r >= VALID_LEN) begin
+                        exp = '0;
+                        if (got !== exp) begin
+                            $display("FAIL TOP padding row O[%0d][%0d] got=%0d expected zero",
+                                     r, c, got);
                             $fatal(1);
                         end
                     end else if (r == 0) begin

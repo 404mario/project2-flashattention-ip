@@ -24,6 +24,7 @@ module flash_core #(
     input  logic causal_en,
     input  logic signed [31:0] neg_large,
     input  logic signed [31:0] scale,
+    input  logic [31:0] valid_len,
 
     output logic q_req_valid,
     output logic [$clog2(S_LEN)-1:0] q_req_row,
@@ -61,6 +62,7 @@ module flash_core #(
     localparam int SCALE_PROD_W = ACC_W + 32;
     localparam int SCALE_SHIFT  = (SOFTMAX_FRAC == FRAC_W) ? (2 * FRAC_W) :
                                   (3 * FRAC_W - SOFTMAX_FRAC);
+    localparam logic [ROW_W:0] S_LEN_WIDE = S_LEN;
 
     typedef enum logic [3:0] {
         ST_IDLE,
@@ -111,6 +113,7 @@ module flash_core #(
     logic [ROW_W:0]   block_end_wide;
     logic [ROW_W:0]   next_block_start_wide;
     logic [ROW_W:0]   next_kv_start_wide;
+    logic [ROW_W:0]   valid_len_clamped;
     logic             last_block;
     logic             tile_last_for_block;
     logic             score_should_skip;
@@ -276,11 +279,15 @@ module flash_core #(
     assign current_q_row = q_block_start_q + q_proc_index_q;
     assign current_key_index = kv_start_q + key_offset_q;
     assign next_kv_start_wide = {1'b0, kv_start_q} + BK;
+    assign valid_len_clamped = (valid_len > S_LEN) ? S_LEN_WIDE : valid_len[ROW_W:0];
     assign tile_last_for_block =
         (next_kv_start_wide >= S_LEN) ||
+        (next_kv_start_wide >= valid_len_clamped) ||
         ((USE_CAUSAL_SKIP != 0) && causal_en && (next_kv_start_wide > block_end_row));
     assign score_should_skip =
-        (USE_CAUSAL_SKIP != 0) && causal_en && (current_key_index > current_q_row);
+        ({1'b0, current_key_index} >= valid_len_clamped) ||
+        ({1'b0, current_q_row} >= valid_len_clamped) ||
+        ((USE_CAUSAL_SKIP != 0) && causal_en && (current_key_index > current_q_row));
     assign advance_has_next_key = ((key_offset_q + 1'b1) < kv_len_q);
     assign advance_has_next_query = ((q_proc_index_q + 1'b1) < q_block_len_q);
     assign advance_has_next_score = advance_has_next_key || advance_has_next_query;
@@ -291,7 +298,9 @@ module flash_core #(
     assign advance_q_row = q_block_start_q + advance_q_proc_index;
     assign advance_key_index = kv_start_q + advance_key_offset;
     assign advance_score_should_skip =
-        (USE_CAUSAL_SKIP != 0) && causal_en && (advance_key_index > advance_q_row);
+        ({1'b0, advance_key_index} >= valid_len_clamped) ||
+        ({1'b0, advance_q_row} >= valid_len_clamped) ||
+        ((USE_CAUSAL_SKIP != 0) && causal_en && (advance_key_index > advance_q_row));
     assign causal_first_valid_q_wide =
         (kv_start_q > q_block_start_q) ? ({1'b0, kv_start_q} - {1'b0, q_block_start_q}) :
                                          {(ROW_W+1){1'b0}};

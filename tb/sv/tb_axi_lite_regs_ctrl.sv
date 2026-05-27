@@ -24,6 +24,7 @@ module tb_axi_lite_regs_ctrl;
     localparam logic [31:0] REG_RD_BYTES_H   = 32'h48;
     localparam logic [31:0] REG_WR_BYTES_L   = 32'h4c;
     localparam logic [31:0] REG_WR_BYTES_H   = 32'h50;
+    localparam logic [31:0] REG_VALID_LEN    = 32'h54;
 
     localparam logic [31:0] CTRL_START       = 32'h0000_0001;
     localparam logic [31:0] CTRL_SOFT_RESET  = 32'h0000_0002;
@@ -65,6 +66,7 @@ module tb_axi_lite_regs_ctrl;
     wire [31:0] stride_bytes;
     wire signed [31:0] neg_large;
     wire signed [31:0] scale;
+    wire [31:0] valid_len;
     logic busy;
     logic done;
     logic error;
@@ -79,6 +81,7 @@ module tb_axi_lite_regs_ctrl;
     axi_lite_regs #(
         .ADDR_W(ADDR_W),
         .DATA_W(DATA_W),
+        .S_LEN(256),
         .D_MODEL(D_MODEL)
     ) dut (
         .clk(clk),
@@ -111,6 +114,7 @@ module tb_axi_lite_regs_ctrl;
         .stride_bytes(stride_bytes),
         .neg_large(neg_large),
         .scale(scale),
+        .valid_len(valid_len),
         .busy(busy),
         .done(done),
         .error(error),
@@ -278,6 +282,8 @@ module tb_axi_lite_regs_ctrl;
         expect_eq("NEG_LARGE reset", data, 32'hffff_8000);
         axil_read(REG_SCALE, data);
         expect_eq("SCALE reset", data, 32'd32);
+        axil_read(REG_VALID_LEN, data);
+        expect_eq("VALID_LEN reset", data, 32'd256);
 
         axil_write(REG_CFG, CFG_CAUSAL_EN);
         axil_read(REG_CFG, data);
@@ -291,6 +297,7 @@ module tb_axi_lite_regs_ctrl;
         axil_write(REG_STRIDE_BYTES, 32'd160);
         axil_write(REG_NEG_LARGE, 32'hffff_9000);
         axil_write(REG_SCALE, 32'd91);
+        axil_write(REG_VALID_LEN, 32'd37);
 
         expect_eq("q_base output", q_base, 64'h1111_2222_3333_4444);
         expect_eq("k_base output", k_base, 64'h5555_6666_7777_8888);
@@ -299,6 +306,7 @@ module tb_axi_lite_regs_ctrl;
         expect_eq("stride output", stride_bytes, 32'd160);
         expect_eq("neg_large output", neg_large, 64'hffff_ffff_ffff_9000);
         expect_eq("scale output", scale, 32'd91);
+        expect_eq("valid_len output", valid_len, 32'd37);
 
         axil_read(REG_CYCLES, data);
         expect_eq("CYCLES read", data, cycles);

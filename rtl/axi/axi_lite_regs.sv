@@ -3,6 +3,7 @@
 module axi_lite_regs #(
     parameter int ADDR_W  = 32,
     parameter int DATA_W  = 32,
+    parameter int S_LEN   = 256,
     parameter int D_MODEL = 64
 ) (
     input  logic                 clk,
@@ -43,6 +44,7 @@ module axi_lite_regs #(
     output logic [31:0]          stride_bytes,
     output logic signed [31:0]   neg_large,
     output logic signed [31:0]   scale,
+    output logic [31:0]          valid_len,
 
     input  logic                 busy,
     input  logic                 done,
@@ -73,10 +75,12 @@ module axi_lite_regs #(
     localparam logic [ADDR_W-1:0] REG_RD_BYTES_H   = 'h48;
     localparam logic [ADDR_W-1:0] REG_WR_BYTES_L   = 'h4C;
     localparam logic [ADDR_W-1:0] REG_WR_BYTES_H   = 'h50;
+    localparam logic [ADDR_W-1:0] REG_VALID_LEN    = 'h54;
 
     localparam logic signed [31:0] DEFAULT_NEG_LARGE = -32'sd32768;
     localparam logic signed [31:0] DEFAULT_SCALE     =  32'sd32; // 0.125 in Q8.8
     localparam logic [31:0]        DEFAULT_STRIDE    = D_MODEL * 2;
+    localparam logic [31:0]        DEFAULT_VALID_LEN = S_LEN;
 
     logic [ADDR_W-1:0] awaddr_q;
     logic [DATA_W-1:0] wdata_q;
@@ -95,6 +99,7 @@ module axi_lite_regs #(
     logic [31:0] stride_bytes_q;
     logic signed [31:0] neg_large_q;
     logic signed [31:0] scale_q;
+    logic [31:0] valid_len_q;
 
     logic done_sticky_q;
     logic error_sticky_q;
@@ -132,6 +137,7 @@ module axi_lite_regs #(
     assign stride_bytes = stride_bytes_q;
     assign neg_large   = neg_large_q;
     assign scale       = scale_q;
+    assign valid_len   = valid_len_q;
     assign irq         = irq_en_q && done_sticky_q;
 
     always @* begin
@@ -164,6 +170,7 @@ module axi_lite_regs #(
             REG_RD_BYTES_H:    s_axil_rdata = rd_bytes[63:32];
             REG_WR_BYTES_L:    s_axil_rdata = wr_bytes[31:0];
             REG_WR_BYTES_H:    s_axil_rdata = wr_bytes[63:32];
+            REG_VALID_LEN:     s_axil_rdata = valid_len_q;
             default:           s_axil_rdata = '0;
         endcase
     end
@@ -191,6 +198,7 @@ module axi_lite_regs #(
             stride_bytes_q  <= DEFAULT_STRIDE;
             neg_large_q     <= DEFAULT_NEG_LARGE;
             scale_q         <= DEFAULT_SCALE;
+            valid_len_q     <= DEFAULT_VALID_LEN;
             done_sticky_q   <= 1'b0;
             error_sticky_q  <= 1'b0;
         end else begin
@@ -273,6 +281,9 @@ module axi_lite_regs #(
                     end
                     REG_SCALE: begin
                         scale_q <= apply_wstrb32(scale_q, wdata_q, wstrb_q);
+                    end
+                    REG_VALID_LEN: begin
+                        valid_len_q <= apply_wstrb32(valid_len_q, wdata_q, wstrb_q);
                     end
                     default: begin
                     end

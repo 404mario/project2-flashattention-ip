@@ -84,6 +84,7 @@ module flash_attn_top #(
     logic [31:0] stride_bytes;
     logic signed [31:0] neg_large;
     logic signed [31:0] scale;
+    logic [31:0] valid_len;
     logic [31:0] cycle_count_q;
     logic [63:0] rd_bytes_count_q;
     logic [63:0] wr_bytes_count_q;
@@ -225,6 +226,7 @@ module flash_attn_top #(
     axi_lite_regs #(
         .ADDR_W(32),
         .DATA_W(32),
+        .S_LEN(S_LEN),
         .D_MODEL(D_MODEL)
     ) u_axi_lite_regs (
         .clk(clk),
@@ -257,6 +259,7 @@ module flash_attn_top #(
         .stride_bytes(stride_bytes),
         .neg_large(neg_large),
         .scale(scale),
+        .valid_len(valid_len),
         .busy(overall_busy),
         .done(overall_done_pulse),
         .error(overall_error),
@@ -288,6 +291,7 @@ module flash_attn_top #(
         .causal_en(causal_en),
         .neg_large(neg_large),
         .scale(scale),
+        .valid_len(valid_len),
         .q_req_valid(q_req_valid),
         .q_req_row(q_req_row),
         .q_req_ready(q_req_ready),
