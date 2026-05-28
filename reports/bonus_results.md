@@ -69,8 +69,18 @@ is `reports/bonus_fullsize_summary.png`.
 | Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | RTL MaxE | FP32 MAE | FP32 MaxE |
 |---|---:|---|---|---:|---:|---:|---:|---:|---:|
 | Q8.8 baseline full-size | S=256,D=64,BK=16,BQ=16 | default | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
+| Q8.8 random-vector full-size | S=256,D=64,BK=16,BQ=16 | RUN_VECTORS=1, supplied random Q/K/V | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000097 | 0.054688 |
 | INT8/Q4.4 low-precision full-size | S=256,D=64,BK=16,BQ=16 | DATA_W=8,FRAC_W=4 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.005238 | 0.187500 |
 | FP8/E4M3 low-precision full-size | S=256,D=64,BK=16,BQ=16 | FP8_E4M3_MODE=1 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.000043 | 0.011719 |
 
 The VCD-enabled smoke run is available as `sim_build/wave_lowprecision_s8_d8.vcd`; a compact
 preview image is `reports/wave_lowprecision_s8_d8_preview.png`.
+
+Additional report-ready evidence images:
+
+- `reports/random_fullsize_verification.png`: random-vector full-size correctness summary.
+- `reports/wave_q8_control_dma_preview.png`: AXI-Lite start/status, AXI master read, core stream, and writeback waveform.
+- `reports/wave_q8_causal_softmax_preview.png`: causal masking and online-softmax internal state waveform.
+
+The raw Q8.8 waveform for the two waveform previews is
+`sim_build/wave_q8_small_control_dma_softmax.vcd`.
