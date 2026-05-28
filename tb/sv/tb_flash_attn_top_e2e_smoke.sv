@@ -17,6 +17,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int USE_CAUSAL_SKIP = 1;
     parameter int SOFTMAX_FRAC    = 16;
     parameter int FP8_E4M3_MODE   = 0;
+    parameter int BF16_IO_MODE    = 0;
     parameter int VALID_LEN       = S_LEN;
     parameter int TASK_COUNT      = 1;
     parameter int TASK_STRIDE_BYTES = S_LEN * D_MODEL * (DATA_W / 8);
@@ -207,7 +208,8 @@ module tb_flash_attn_top_e2e_smoke;
         .DOT_LANES(DOT_LANES),
         .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
         .SOFTMAX_FRAC(SOFTMAX_FRAC),
-        .FP8_E4M3_MODE(FP8_E4M3_MODE)
+        .FP8_E4M3_MODE(FP8_E4M3_MODE),
+        .BF16_IO_MODE(BF16_IO_MODE)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -922,6 +924,8 @@ module tb_flash_attn_top_e2e_smoke;
                             end else if ((r == 0) && (DROPOUT_EN == 0)) begin
                                 if (FP8_E4M3_MODE != 0) begin
                                     exp = fp8_e4m3_pkg::q8_8_to_fp8_e4m3(v_data_value(0, c, t, h));
+                                end else if (BF16_IO_MODE != 0) begin
+                                    exp = bf16_pkg::q8_8_to_bf16(v_data_value(0, c, t, h));
                                 end else begin
                                     exp = v_data_value(0, c, t, h);
                                 end
@@ -957,6 +961,8 @@ module tb_flash_attn_top_e2e_smoke;
             for (idx = 0; idx < TOTAL_O_ELEMS; idx = idx + 1) begin
                 if (FP8_E4M3_MODE != 0) begin
                     dump_value = fp8_e4m3_pkg::fp8_e4m3_to_q8_8(o_mem[idx][7:0]);
+                end else if (BF16_IO_MODE != 0) begin
+                    dump_value = bf16_pkg::bf16_to_q8_8(o_mem[idx][15:0]);
                 end else begin
                     dump_value = $signed(o_mem[idx]);
                 end
@@ -1048,6 +1054,10 @@ module tb_flash_attn_top_e2e_smoke;
                             q_src_mem[init_idx] = fp8_e4m3_pkg::q8_8_to_fp8_e4m3(init_q);
                             k_src_mem[init_idx] = fp8_e4m3_pkg::q8_8_to_fp8_e4m3(init_k);
                             v_src_mem[init_idx] = fp8_e4m3_pkg::q8_8_to_fp8_e4m3(init_v);
+                        end else if (BF16_IO_MODE != 0) begin
+                            q_src_mem[init_idx] = bf16_pkg::q8_8_to_bf16(init_q);
+                            k_src_mem[init_idx] = bf16_pkg::q8_8_to_bf16(init_k);
+                            v_src_mem[init_idx] = bf16_pkg::q8_8_to_bf16(init_v);
                         end else begin
                             q_src_mem[init_idx] = init_q[DATA_W-1:0];
                             k_src_mem[init_idx] = init_k[DATA_W-1:0];

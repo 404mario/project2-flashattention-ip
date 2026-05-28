@@ -14,7 +14,8 @@ module flash_attn_top #(
     parameter int DOT_LANES       = 32,
     parameter int USE_CAUSAL_SKIP = 1,
     parameter int SOFTMAX_FRAC    = 16,
-    parameter int FP8_E4M3_MODE   = 0
+    parameter int FP8_E4M3_MODE   = 0,
+    parameter int BF16_IO_MODE    = 0
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -74,8 +75,8 @@ module flash_attn_top #(
     output logic irq
 );
 
-    localparam int CORE_DATA_W = (FP8_E4M3_MODE != 0) ? 16 : DATA_W;
-    localparam int CORE_FRAC_W = (FP8_E4M3_MODE != 0) ? 8 : FRAC_W;
+    localparam int CORE_DATA_W = ((FP8_E4M3_MODE != 0) || (BF16_IO_MODE != 0)) ? 16 : DATA_W;
+    localparam int CORE_FRAC_W = ((FP8_E4M3_MODE != 0) || (BF16_IO_MODE != 0)) ? 8 : FRAC_W;
 
     logic start_pulse;
     logic soft_reset;
@@ -395,7 +396,66 @@ module flash_attn_top #(
     );
 
     generate
-        if (FP8_E4M3_MODE != 0) begin : gen_fp8_dma
+        if (BF16_IO_MODE != 0) begin : gen_bf16_dma
+            dma_controller_bf16 #(
+                .S_LEN(S_LEN),
+                .ADDR_W(ADDR_W),
+                .CORE_DATA_W(CORE_DATA_W),
+                .D_MODEL(D_MODEL),
+                .BK(BK),
+                .AXI_DATA_W(AXI_DATA_W)
+            ) u_dma_controller (
+                .clk(clk),
+                .rst_n(work_rst_n),
+                .start(task_start_pulse),
+                .busy(dma_busy),
+                .done(dma_done),
+                .error(dma_error),
+                .q_base(q_base_eff),
+                .k_base(k_base_eff),
+                .v_base(v_base_eff),
+                .o_base(o_base_eff),
+                .stride_bytes(stride_bytes),
+                .q_req_valid(q_req_valid),
+                .q_req_row(q_req_row),
+                .q_req_ready(q_req_ready),
+                .q_data_valid(q_data_valid),
+                .q_data(),
+                .q_data_flat(q_data_flat),
+                .q_data_ready(q_data_ready),
+                .kv_req_valid(kv_req_valid),
+                .kv_req_start(kv_req_start),
+                .kv_req_len(kv_req_len),
+                .kv_req_ready(kv_req_ready),
+                .kv_data_valid(kv_data_valid),
+                .k_tile(),
+                .v_tile(),
+                .k_tile_flat(k_tile_flat),
+                .v_tile_flat(v_tile_flat),
+                .kv_data_ready(kv_data_ready),
+                .o_valid(o_valid),
+                .o_row(o_row),
+                .o_data(o_data),
+                .o_data_flat(o_data_flat),
+                .o_ready(o_ready),
+                .rd_req_valid(rd_req_valid),
+                .rd_req_addr(rd_req_addr),
+                .rd_req_bytes(rd_req_bytes),
+                .rd_req_ready(rd_req_ready),
+                .rd_data_valid(rd_data_valid),
+                .rd_data(rd_data),
+                .rd_last(rd_last),
+                .rd_data_ready(rd_data_ready),
+                .wr_req_valid(wr_req_valid),
+                .wr_req_addr(wr_req_addr),
+                .wr_req_bytes(wr_req_bytes),
+                .wr_req_ready(wr_req_ready),
+                .wr_data_valid(wr_data_valid),
+                .wr_data(wr_data),
+                .wr_last(wr_last),
+                .wr_data_ready(wr_data_ready)
+            );
+        end else if (FP8_E4M3_MODE != 0) begin : gen_fp8_dma
             dma_controller_fp8 #(
                 .S_LEN(S_LEN),
                 .ADDR_W(ADDR_W),

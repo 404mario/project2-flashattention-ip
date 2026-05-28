@@ -30,6 +30,7 @@ Acceptance thresholds:
 - Bonus 7, lower precision: INT8/Q4.4 external tensors and FP8/E4M3 tensors are verified through the top E2E flow.
 - Bonus 8, AXI4-Stream interface: `flash_attn_axis_top` wraps the shared core with Q/KV input streams and O output stream.
 - Bonus 9, lightweight task queue: `TASK_COUNT` and `TASK_STRIDE_BYTES` chain multiple tensor regions through one START.
+- Bonus 1, BF16 exploratory mode: `BF16_IO_MODE` stores external Q/K/V/O tensors as BF16 while the internal attention datapath stays on the validated Q8.8 core.
 
 ## Latest Quick Evidence
 
@@ -54,11 +55,15 @@ The table below is updated after running the quick scripts on this branch.
 | INT8/Q4.4 low-precision smoke | S=32,D=16,BK=8,BQ=8 | DATA_W=8,FRAC_W=4 | PASS | 4388 | 3072 | 512 | 0.046997 | 0.187500 |
 | FP8/E4M3 low-precision smoke | S=8,D=8,BK=4,BQ=4 | FP8_E4M3_MODE=1 | PASS | 432 | 256 | 64 | 0.001038 | 0.011719 |
 | FP8/E4M3 low-precision smoke | S=32,D=16,BK=8,BQ=8 | FP8_E4M3_MODE=1 | PASS | 4388 | 3072 | 512 | 0.000259 | 0.011719 |
+| BF16 I/O smoke | S=8,D=8,BK=4,BQ=4 | BF16_IO_MODE=1 | PASS | 466 | 512 | 128 | 0.000183 | 0.003906 |
+| BF16 I/O smoke | S=32,D=16,BK=8,BQ=8 | BF16_IO_MODE=1 | PASS | 4780 | 6144 | 1024 | 0.000038 | 0.003906 |
 
 Default Q8.8 small/medium cycle counts match the PPA skeleton after the bonus ports.
 Low-precision rows have zero error against the integer RTL mirror. INT8/Q4.4 is a lossy
 bandwidth trade-off against FP32; FP8/E4M3 keeps the quick-smoke FP32 MaxE below the
 baseline acceptance threshold while halving external tensor bytes.
+BF16 rows use BF16 storage at the AXI memory boundary; this is intentionally documented as
+an I/O-format exploration rather than a full FP16/BF16 floating-point softmax datapath.
 
 ## Full-Size Evidence
 
@@ -70,6 +75,7 @@ is `reports/bonus_fullsize_summary.png`.
 |---|---:|---|---|---:|---:|---:|---:|---:|---:|
 | Q8.8 baseline full-size | S=256,D=64,BK=16,BQ=16 | default | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
 | Q8.8 random-vector full-size | S=256,D=64,BK=16,BQ=16 | RUN_VECTORS=1, supplied random Q/K/V | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000097 | 0.054688 |
+| BF16 I/O full-size | S=256,D=64,BK=16,BQ=16 | BF16_IO_MODE=1 | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
 | INT8/Q4.4 low-precision full-size | S=256,D=64,BK=16,BQ=16 | DATA_W=8,FRAC_W=4 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.005238 | 0.187500 |
 | FP8/E4M3 low-precision full-size | S=256,D=64,BK=16,BQ=16 | FP8_E4M3_MODE=1 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.000043 | 0.011719 |
 
@@ -78,9 +84,12 @@ preview image is `reports/wave_lowprecision_s8_d8_preview.png`.
 
 Additional report-ready evidence images:
 
+- `reports/bonus_bf16_summary.png`: BF16 I/O quick/full-size correctness and performance summary.
+- `reports/wave_bf16_s8_d8_preview.png`: BF16 I/O control, DMA, and core handshake waveform preview.
 - `reports/random_fullsize_verification.png`: random-vector full-size correctness summary.
 - `reports/wave_q8_control_dma_preview.png`: AXI-Lite start/status, AXI master read, core stream, and writeback waveform.
 - `reports/wave_q8_causal_softmax_preview.png`: causal masking and online-softmax internal state waveform.
 
 The raw Q8.8 waveform for the two waveform previews is
 `sim_build/wave_q8_small_control_dma_softmax.vcd`.
+The raw BF16 I/O waveform is `sim_build/wave_bf16_s8_d8.vcd`.

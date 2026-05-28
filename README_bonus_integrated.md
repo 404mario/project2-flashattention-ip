@@ -10,6 +10,7 @@ while adding optional bonus modes behind registers, parameters, or separate wrap
 
 | # | Bonus item | Current implementation |
 |---:|---|---|
+| 1 | BF16 attention | Exploratory BF16 external tensor mode: DMA converts BF16 Q/K/V/O at the memory boundary and reuses the validated Q8.8 core. |
 | 2 | Multi-head support | Sequential head execution via `HEAD_COUNT` and `HEAD_STRIDE_BYTES`. |
 | 3 | Longer/configurable sequence | Parametric `S_LEN` smoke cases for S=64 and S=128. |
 | 4 | Padding mask | `VALID_LEN` masks invalid keys and zeroes invalid query rows. |
@@ -19,7 +20,7 @@ while adding optional bonus modes behind registers, parameters, or separate wrap
 | 8 | AXI4-Stream interface | Additional `flash_attn_axis_top` wrapper; original DMA top remains available. |
 | 9 | DMA/task queue | `TASK_COUNT` and `TASK_STRIDE_BYTES` run multiple tasks from one START. |
 
-Item #1 is not claimed.
+Item #1 is claimed only as a BF16 I/O mode, not as a full native floating-point datapath.
 
 ## Verification Entry Points
 
@@ -40,6 +41,7 @@ Individual quick checks:
 ./sim/run_bonus_dropout_smoke.sh
 ./sim/run_bonus_multi_head_smoke.sh
 ./sim/run_bonus_lowprecision_int8_smoke.sh
+./sim/run_bonus_bf16_smoke.sh
 ```
 
 The default Q8.8 single-task path remains covered by `run_top_e2e_smoke.sh`; bonus modes are

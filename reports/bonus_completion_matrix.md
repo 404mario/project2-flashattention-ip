@@ -10,7 +10,7 @@ available and rerunnable.
 
 | # | Bonus item | Status | Evidence |
 |---:|---|---|---|
-| 1 | BF16/FP16 attention | Not claimed | No BF16/FP16 datapath is integrated. |
+| 1 | BF16/FP16 attention | Exploratory | BF16 external Q/K/V/O tensor mode through `BF16_IO_MODE`; DMA converts at the memory boundary and the core remains Q8.8. |
 | 2 | Multi-head support | Ported | H=4 and H=8 sequential-head smoke with per-head RTL mirror checks. |
 | 3 | Longer/configurable sequence | Ported | S=64 and S=128 top E2E smoke through `sim/run_bonus_sequence_smoke.sh`. |
 | 4 | Padding mask | Ported | AXI-Lite `VALID_LEN`, causal corner cases, and invalid-row zeroing. |
@@ -46,6 +46,7 @@ Inherited from `codex-baseline-ppa-fix`:
 | Parametric top E2E testbench | `tb/sv/tb_flash_attn_top_e2e_smoke.sv` |
 | Integrated quick checks | `sim/run_bonus_all.sh` |
 | Low-precision quick checks | `sim/run_bonus_lowprecision_int8_smoke.sh` |
+| BF16 I/O quick checks | `sim/run_bonus_bf16_smoke.sh` |
 
 Default Q8.8 smoke after the bonus ports must remain at the PPA skeleton values
 `S=8 -> 456 cycles` and `S=32 -> 4780 cycles`.

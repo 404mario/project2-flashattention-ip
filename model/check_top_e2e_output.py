@@ -221,6 +221,60 @@ def fp8_e4m3_roundtrip_matrix(values):
     return out
 
 
+def bf16_to_q8_8(raw):
+    raw = int(raw) & 0xFFFF
+    sign = -1 if (raw & 0x8000) else 1
+    exp = (raw >> 7) & 0xFF
+    mant = raw & 0x7F
+    if exp == 0:
+        return 0
+    if exp == 0xFF:
+        return -32768 if sign < 0 else 32767
+
+    shift = (exp - 127) + 1
+    mag = 128 + mant
+    if shift >= 0:
+        mag <<= shift
+    elif shift <= -63:
+        mag = 0
+    else:
+        rshift = -shift
+        mag = (mag + (1 << (rshift - 1))) >> rshift
+    return saturate_signed(sign * mag, 16)
+
+
+def q8_8_to_bf16(value):
+    value = int(value)
+    sign_bit = 0x8000 if value < 0 else 0
+    abs_q = abs(value)
+    if abs_q == 0:
+        return 0
+
+    msb = abs_q.bit_length() - 1
+    exp = (msb - 8) + 127
+    if msb > 7:
+        shift = msb - 7
+        sig = abs_q >> shift
+        if abs_q & (1 << (shift - 1)):
+            sig += 1
+    else:
+        sig = abs_q << (7 - msb)
+
+    if sig >= 256:
+        exp += 1
+        sig = 128
+    if exp >= 255:
+        return sign_bit | 0x7F7F
+    return sign_bit | ((exp & 0xFF) << 7) | (sig & 0x7F)
+
+
+def bf16_roundtrip_matrix(values):
+    out = np.zeros_like(values, dtype=np.int64)
+    for idx, value in np.ndenumerate(values):
+        out[idx] = bf16_to_q8_8(q8_8_to_bf16(value))
+    return out
+
+
 def saturate_i16(value):
     return min(max(int(value), -32768), 32767)
 
@@ -286,13 +340,17 @@ def load_inputs(args):
         q = read_hex16_matrix(Path(args.q_hex), args.s_len, args.d_model)
         k = read_hex16_matrix(Path(args.k_hex), args.s_len, args.d_model)
         v = read_hex16_matrix(Path(args.v_hex), args.s_len, args.d_model)
-        return q, k, v
+    else:
+        q, k, v = build_inputs(args.s_len, args.d_model, args.frac_w, args.task_index, args.head_index)
 
-    q, k, v = build_inputs(args.s_len, args.d_model, args.frac_w, args.task_index, args.head_index)
     if args.fp8_e4m3_io:
         q = fp8_e4m3_roundtrip_matrix(q)
         k = fp8_e4m3_roundtrip_matrix(k)
         v = fp8_e4m3_roundtrip_matrix(v)
+    if args.bf16_io:
+        q = bf16_roundtrip_matrix(q)
+        k = bf16_roundtrip_matrix(k)
+        v = bf16_roundtrip_matrix(v)
     return q, k, v
 
 
@@ -509,7 +567,10 @@ def main():
     parser.add_argument("--dropout-seed", type=lambda x: int(x, 0), default=0xACE1)
     parser.add_argument("--dropout-scale-q8-8", type=int, default=256)
     parser.add_argument("--fp8-e4m3-io", action="store_true", help="Model FP8 E4M3 input and output quantization")
+    parser.add_argument("--bf16-io", action="store_true", help="Model BF16 input and output quantization")
     args = parser.parse_args()
+    if args.fp8_e4m3_io and args.bf16_io:
+        raise ValueError("--fp8-e4m3-io and --bf16-io are mutually exclusive")
 
     hex_path = Path(args.hex)
     got = read_hex16_matrix(hex_path, args.s_len, args.d_model, args.hex_offset)
@@ -534,6 +595,8 @@ def main():
     )
     if args.fp8_e4m3_io:
         expected_rtl = fp8_e4m3_roundtrip_matrix(expected_rtl)
+    if args.bf16_io:
+        expected_rtl = bf16_roundtrip_matrix(expected_rtl)
     _, max_err = report("RTL output vs RTL fixed-point mirror", got, expected_rtl, frac_w=args.frac_w)
     if max_err != 0:
         raise SystemExit(1)

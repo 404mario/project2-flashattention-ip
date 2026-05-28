@@ -12,11 +12,13 @@ iverilog -g2012 -Wall \
     -o "$OUT" \
     "$ROOT/rtl/include/flash_attn_pkg.sv" \
     "$ROOT/rtl/include/fp8_e4m3_pkg.sv" \
+    "$ROOT/rtl/include/bf16_pkg.sv" \
     "$ROOT/rtl/axi/axi_lite_regs.sv" \
     "$ROOT/rtl/axi/axi_master_read.sv" \
     "$ROOT/rtl/axi/axi_master_write.sv" \
     "$ROOT/rtl/axi/dma_controller.sv" \
     "$ROOT/rtl/axi/dma_controller_fp8.sv" \
+    "$ROOT/rtl/axi/dma_controller_bf16.sv" \
     "$ROOT/rtl/core/tile_scheduler.sv" \
     "$ROOT/rtl/mem/row_buffer.sv" \
     "$ROOT/rtl/mem/tile_buffer.sv" \

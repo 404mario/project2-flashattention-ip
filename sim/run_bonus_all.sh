@@ -28,4 +28,7 @@ echo "=== integrated bonus: multi-head smoke ==="
 echo "=== integrated bonus: low-precision smoke ==="
 ./sim/run_bonus_lowprecision_int8_smoke.sh
 
+echo "=== integrated bonus: BF16 I/O smoke ==="
+./sim/run_bonus_bf16_smoke.sh
+
 echo "Integrated bonus quick checks passed."
