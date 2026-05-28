@@ -59,3 +59,18 @@ Default Q8.8 small/medium cycle counts match the PPA skeleton after the bonus po
 Low-precision rows have zero error against the integer RTL mirror. INT8/Q4.4 is a lossy
 bandwidth trade-off against FP32; FP8/E4M3 keeps the quick-smoke FP32 MaxE below the
 baseline acceptance threshold while halving external tensor bytes.
+
+## Full-Size Evidence
+
+Full-size S=256,D=64 simulations were rerun from the integrated branch after adding the
+low-precision modes. The raw logs are under `sim_build/` and the report-ready summary image
+is `reports/bonus_fullsize_summary.png`.
+
+| Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | RTL MaxE | FP32 MAE | FP32 MaxE |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Q8.8 baseline full-size | S=256,D=64,BK=16,BQ=16 | default | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
+| INT8/Q4.4 low-precision full-size | S=256,D=64,BK=16,BQ=16 | DATA_W=8,FRAC_W=4 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.005238 | 0.187500 |
+| FP8/E4M3 low-precision full-size | S=256,D=64,BK=16,BQ=16 | FP8_E4M3_MODE=1 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.000043 | 0.011719 |
+
+The VCD-enabled smoke run is available as `sim_build/wave_lowprecision_s8_d8.vcd`; a compact
+preview image is `reports/wave_lowprecision_s8_d8_preview.png`.
