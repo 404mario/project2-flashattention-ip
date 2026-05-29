@@ -47,6 +47,12 @@ Inherited from `codex-baseline-ppa-fix`:
 | Integrated quick checks | `sim/run_bonus_all.sh` |
 | Low-precision quick checks | `sim/run_bonus_lowprecision_int8_smoke.sh` |
 | BF16 I/O quick checks | `sim/run_bonus_bf16_smoke.sh` |
+| Synthesis-friendly full-size random-vector check | `sim/run_bonus_synth_timing_smoke.sh` |
 
 Default Q8.8 smoke after the bonus ports must remain at the PPA skeleton values
 `S=8 -> 456 cycles` and `S=32 -> 4780 cycles`.
+
+For re-synthesis after the integrated bonus area/timing report, keep the direct top-level
+defaults or explicitly set `STATIC_SCALE_MODE=1`, `STATIC_SCALE_Q8_8=32`, and
+`ENABLE_DROPOUT=0`. This trims runtime scale multiplication and dropout-only logic from the
+default production datapath while preserving those bonus modes as parameter-enabled RTL.

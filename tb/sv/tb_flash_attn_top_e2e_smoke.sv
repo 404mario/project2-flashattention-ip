@@ -18,6 +18,9 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int SOFTMAX_FRAC    = 16;
     parameter int FP8_E4M3_MODE   = 0;
     parameter int BF16_IO_MODE    = 0;
+    parameter int STATIC_SCALE_MODE = 0;
+    parameter int STATIC_SCALE_Q8_8 = 32;
+    parameter int ENABLE_DROPOUT    = 1;
     parameter int VALID_LEN       = S_LEN;
     parameter int TASK_COUNT      = 1;
     parameter int TASK_STRIDE_BYTES = S_LEN * D_MODEL * (DATA_W / 8);
@@ -209,7 +212,10 @@ module tb_flash_attn_top_e2e_smoke;
         .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
         .SOFTMAX_FRAC(SOFTMAX_FRAC),
         .FP8_E4M3_MODE(FP8_E4M3_MODE),
-        .BF16_IO_MODE(BF16_IO_MODE)
+        .BF16_IO_MODE(BF16_IO_MODE),
+        .STATIC_SCALE_MODE(STATIC_SCALE_MODE),
+        .STATIC_SCALE_Q8_8(STATIC_SCALE_Q8_8),
+        .ENABLE_DROPOUT(ENABLE_DROPOUT)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),

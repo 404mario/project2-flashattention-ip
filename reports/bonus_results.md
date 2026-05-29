@@ -78,9 +78,16 @@ is `reports/bonus_fullsize_summary.png`.
 | BF16 I/O full-size | S=256,D=64,BK=16,BQ=16 | BF16_IO_MODE=1 | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
 | INT8/Q4.4 low-precision full-size | S=256,D=64,BK=16,BQ=16 | DATA_W=8,FRAC_W=4 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.005238 | 0.187500 |
 | FP8/E4M3 low-precision full-size | S=256,D=64,BK=16,BQ=16 | FP8_E4M3_MODE=1 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.000043 | 0.011719 |
+| Synthesis-friendly random-vector full-size | S=256,D=64,BK=16,BQ=16 | STATIC_SCALE_MODE=1,ENABLE_DROPOUT=0 | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000097 | 0.054688 |
 
 The VCD-enabled smoke run is available as `sim_build/wave_lowprecision_s8_d8.vcd`; a compact
 preview image is `reports/wave_lowprecision_s8_d8_preview.png`.
+
+The synthesis-friendly full-size row was run with `sim/run_bonus_synth_timing_smoke.sh`. It
+keeps the same default Q8.8 external behavior while making the direct `flash_attn_top`
+synthesis default constant-scale and dropout-bypassed for timing/area recovery. If a synthesis
+script overrides parameters, use `STATIC_SCALE_MODE=1`, `STATIC_SCALE_Q8_8=32`, and
+`ENABLE_DROPOUT=0` to reproduce this configuration.
 
 Additional report-ready evidence images:
 

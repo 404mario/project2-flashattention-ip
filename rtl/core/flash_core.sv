@@ -11,7 +11,10 @@ module flash_core #(
     parameter int USE_DOT_TREE    = 0,
     parameter int DOT_LANES       = D_MODEL,
     parameter int USE_CAUSAL_SKIP = 0,
-    parameter int SOFTMAX_FRAC    = FRAC_W
+    parameter int SOFTMAX_FRAC    = FRAC_W,
+    parameter int STATIC_SCALE_MODE = 0,
+    parameter int STATIC_SCALE_Q8_8 = 32,
+    parameter int ENABLE_DROPOUT    = 1
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -135,6 +138,7 @@ module flash_core #(
     logic                causal_jump_has_score;
     logic [BQ_IDX_W-1:0] causal_jump_q_proc_index;
 
+    wire signed [31:0] scale_eff;
     logic signed [SCALE_PROD_W-1:0] scaled_product;
     logic signed [SCALE_PROD_W-1:0] legacy_scaled_product;
     logic signed [ACC_W-1:0] scaled_score;
@@ -239,6 +243,14 @@ module flash_core #(
     generate
         for (o_gen = 0; o_gen < D_MODEL; o_gen = o_gen + 1) begin : gen_o_data_assign
             assign o_data[o_gen] = o_data_q[o_gen];
+        end
+    endgenerate
+
+    generate
+        if (STATIC_SCALE_MODE != 0) begin : gen_static_scale
+            assign scale_eff = STATIC_SCALE_Q8_8;
+        end else begin : gen_runtime_scale
+            assign scale_eff = scale;
         end
     endgenerate
 
@@ -364,11 +376,20 @@ module flash_core #(
                           (scaled_product >>> SCALE_SHIFT);
     assign old_scale = old_scale_softmax;
     assign new_weight = new_weight_softmax;
-    assign dropout_rand = dropout_rand16(current_q_row, current_key_index, dropout_seed);
-    assign dropout_keep = !dropout_en || (dropout_rand >= dropout_threshold);
-    assign acc_new_weight = dropout_en ?
-                            dropout_weight(new_weight, dropout_keep, dropout_scale_q8_8) :
-                            new_weight;
+
+    generate
+        if (ENABLE_DROPOUT != 0) begin : gen_dropout_path
+            assign dropout_rand = dropout_rand16(current_q_row, current_key_index, dropout_seed);
+            assign dropout_keep = !dropout_en || (dropout_rand >= dropout_threshold);
+            assign acc_new_weight = dropout_en ?
+                                    dropout_weight(new_weight, dropout_keep, dropout_scale_q8_8) :
+                                    new_weight;
+        end else begin : gen_no_dropout_path
+            assign dropout_rand = '0;
+            assign dropout_keep = 1'b1;
+            assign acc_new_weight = new_weight;
+        end
+    endgenerate
 
     always_comb begin
         busy  = (state_q != ST_IDLE) && (state_q != ST_DONE);
@@ -459,7 +480,7 @@ module flash_core #(
                         key_offset_q    <= '0;
                         norm_index_q    <= '0;
                         norm_write_index_q <= '0;
-                        scale_run_q     <= scale;
+                        scale_run_q     <= scale_eff;
                         state_q         <= ST_REQ_Q;
                     end
                 end

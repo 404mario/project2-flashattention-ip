@@ -15,7 +15,10 @@ module flash_attn_top #(
     parameter int USE_CAUSAL_SKIP = 1,
     parameter int SOFTMAX_FRAC    = 16,
     parameter int FP8_E4M3_MODE   = 0,
-    parameter int BF16_IO_MODE    = 0
+    parameter int BF16_IO_MODE    = 0,
+    parameter int STATIC_SCALE_MODE = 1,
+    parameter int STATIC_SCALE_Q8_8 = 32,
+    parameter int ENABLE_DROPOUT    = 0
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -358,7 +361,10 @@ module flash_attn_top #(
         .USE_DOT_TREE(USE_DOT_TREE),
         .DOT_LANES(DOT_LANES),
         .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
-        .SOFTMAX_FRAC(SOFTMAX_FRAC)
+        .SOFTMAX_FRAC(SOFTMAX_FRAC),
+        .STATIC_SCALE_MODE(STATIC_SCALE_MODE),
+        .STATIC_SCALE_Q8_8(STATIC_SCALE_Q8_8),
+        .ENABLE_DROPOUT(ENABLE_DROPOUT)
     ) u_flash_core (
         .clk(clk),
         .rst_n(work_rst_n),

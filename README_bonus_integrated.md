@@ -47,4 +47,23 @@ Individual quick checks:
 The default Q8.8 single-task path remains covered by `run_top_e2e_smoke.sh`; bonus modes are
 programmed only when their registers or parameters are enabled.
 
+## Synthesis-Friendly Timing Configuration
+
+`flash_attn_top` now defaults to the performance configuration used for re-synthesis:
+
+- `STATIC_SCALE_MODE=1`
+- `STATIC_SCALE_Q8_8=32`
+- `ENABLE_DROPOUT=0`
+
+This lets synthesis constant-fold the default full-size scale factor and trim dropout-only
+logic from the timing-critical production datapath. The dynamic scale and dropout RTL remain
+available by parameter override; the main testbench explicitly overrides back to
+`STATIC_SCALE_MODE=0` and `ENABLE_DROPOUT=1` for functional bonus regressions.
+
+Full-size random-vector smoke for the synthesis-friendly configuration:
+
+```bash
+bash ./sim/run_bonus_synth_timing_smoke.sh
+```
+
 See `reports/bonus_results.md` for cycles, bytes, and error evidence.
