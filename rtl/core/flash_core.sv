@@ -73,7 +73,7 @@ module flash_core #(
         ST_NORMALIZE,
         ST_NORMALIZE_DRAIN,
         ST_EMIT_O,
-        ST_STEP,
+        ST_SCORE_UPDATE,
         ST_DONE,
         ST_ADVANCE_SCORE
     } state_t;
@@ -119,13 +119,20 @@ module flash_core #(
     logic signed [ACC_W-1:0] scaled_score;
     logic signed [ACC_W-1:0] masked_score;
     logic score_valid;
+    logic signed [31:0] scale_run_q;
 
     logic signed [ACC_W-1:0] m_state_q;
     logic [L_W-1:0] l_state_q;
-    logic signed [ACC_W-1:0] m_next;
-    logic [L_W-1:0] l_next;
+    logic signed [ACC_W-1:0] m_softmax_next;
+    logic [L_W-1:0] l_softmax_next;
+    logic [WEIGHT_W-1:0] old_scale_softmax;
+    logic [WEIGHT_W-1:0] new_weight_softmax;
     logic [WEIGHT_W-1:0] old_scale;
     logic [WEIGHT_W-1:0] new_weight;
+    logic signed [ACC_W-1:0] m_update_q;
+    logic [L_W-1:0] l_update_q;
+    logic [WEIGHT_W-1:0] old_scale_update_q;
+    logic [WEIGHT_W-1:0] new_weight_update_q;
     logic signed [ACC_W-1:0] acc_state_q [0:D_MODEL-1];
     wire signed [ACC_W-1:0] acc_next [0:D_MODEL-1];
 
@@ -212,10 +219,10 @@ module flash_core #(
         .score(masked_score),
         .m_in(m_state_q),
         .l_in(l_state_q),
-        .m_out(m_next),
-        .l_out(l_next),
-        .old_scale(old_scale),
-        .new_weight(new_weight)
+        .m_out(m_softmax_next),
+        .l_out(l_softmax_next),
+        .old_scale(old_scale_softmax),
+        .new_weight(new_weight_softmax)
     );
 
     value_accumulator #(
@@ -227,8 +234,8 @@ module flash_core #(
     ) u_value_accumulator (
         .acc_in(acc_state_q),
         .v_data(v_work_data),
-        .old_scale(old_scale),
-        .new_weight(new_weight),
+        .old_scale(old_scale_update_q),
+        .new_weight(new_weight_update_q),
         .acc_out(acc_next)
     );
 
@@ -260,11 +267,13 @@ module flash_core #(
     assign score_should_skip =
         (USE_CAUSAL_SKIP != 0) && causal_en && (current_key_index > current_q_row);
 
-    assign legacy_scaled_product = (dot_value >>> FRAC_W) * scale;
-    assign scaled_product = dot_value * scale;
+    assign legacy_scaled_product = (dot_value >>> FRAC_W) * scale_run_q;
+    assign scaled_product = dot_value * scale_run_q;
     assign scaled_score = (SOFTMAX_FRAC == FRAC_W) ?
                           (legacy_scaled_product >>> FRAC_W) :
                           (scaled_product >>> SCALE_SHIFT);
+    assign old_scale = old_scale_softmax;
+    assign new_weight = new_weight_softmax;
 
     always_comb begin
         busy  = (state_q != ST_IDLE) && (state_q != ST_DONE);
@@ -278,7 +287,7 @@ module flash_core #(
         kv_req_valid  = (state_q == ST_REQ_KV);
         kv_req_start  = kv_start_q;
         kv_req_len    = kv_len_q;
-        kv_data_ready = (state_q == ST_ADVANCE_SCORE) &&
+        kv_data_ready = ((state_q == ST_ADVANCE_SCORE) || (state_q == ST_SCORE_UPDATE)) &&
                         !((key_offset_q + 1'b1) < kv_len_q) &&
                         !((q_proc_index_q + 1'b1) < q_block_len_q);
 
@@ -312,6 +321,11 @@ module flash_core #(
             key_offset_q    <= '0;
             norm_index_q    <= '0;
             norm_write_index_q <= '0;
+            scale_run_q     <= '0;
+            m_update_q      <= '0;
+            l_update_q      <= '0;
+            old_scale_update_q <= '0;
+            new_weight_update_q <= '0;
 
             for (seq_q = 0; seq_q < BQ_EFF; seq_q = seq_q + 1) begin
                 m_block[seq_q] <= '0;
@@ -350,6 +364,7 @@ module flash_core #(
                         key_offset_q    <= '0;
                         norm_index_q    <= '0;
                         norm_write_index_q <= '0;
+                        scale_run_q     <= scale;
                         state_q         <= ST_REQ_Q;
                     end
                 end
@@ -415,12 +430,39 @@ module flash_core #(
 
                 ST_DOT_WAIT: begin
                     if (dot_done) begin
-                        m_block[q_proc_index_q] <= m_next;
-                        l_block[q_proc_index_q] <= l_next;
-                        for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
-                            acc_block[q_proc_index_q][seq_d] <= acc_next[seq_d];
-                        end
-                        state_q <= ST_ADVANCE_SCORE;
+                        m_update_q           <= m_softmax_next;
+                        l_update_q           <= l_softmax_next;
+                        old_scale_update_q   <= old_scale_softmax;
+                        new_weight_update_q  <= new_weight_softmax;
+                        state_q              <= ST_SCORE_UPDATE;
+                    end
+                end
+
+                ST_SCORE_UPDATE: begin
+                    m_block[q_proc_index_q] <= m_update_q;
+                    l_block[q_proc_index_q] <= l_update_q;
+                    for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
+                        acc_block[q_proc_index_q][seq_d] <= acc_next[seq_d];
+                    end
+
+                    if ((key_offset_q + 1'b1) < kv_len_q) begin
+                        key_offset_q <= key_offset_q + 1'b1;
+                        state_q      <= ST_PREP_KEY;
+                    end else if ((q_proc_index_q + 1'b1) < q_block_len_q) begin
+                        q_proc_index_q <= q_proc_index_q + 1'b1;
+                        key_offset_q   <= '0;
+                        state_q        <= ST_PREP_KEY;
+                    end else if (tile_last_for_block) begin
+                        emit_index_q <= '0;
+                        norm_index_q <= '0;
+                        norm_write_index_q <= '0;
+                        state_q      <= ST_NORMALIZE;
+                    end else begin
+                        kv_start_q      <= next_kv_start_wide[ROW_W-1:0];
+                        kv_len_q        <= calc_kv_len(next_kv_start_wide[ROW_W-1:0]);
+                        q_proc_index_q  <= '0;
+                        key_offset_q    <= '0;
+                        state_q         <= ST_REQ_KV;
                     end
                 end
 
@@ -480,10 +522,6 @@ module flash_core #(
                             state_q         <= ST_REQ_Q;
                         end
                     end
-                end
-
-                ST_STEP: begin
-                    state_q <= ST_ADVANCE_SCORE;
                 end
 
                 ST_DONE: begin
