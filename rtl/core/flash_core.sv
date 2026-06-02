@@ -113,6 +113,14 @@ module flash_core #(
     logic             last_block;
     logic             tile_last_for_block;
     logic             score_should_skip;
+    logic             advance_has_next_key;
+    logic             advance_has_next_query;
+    logic             advance_has_next_score;
+    logic             advance_score_should_skip;
+    logic [LEN_W-1:0]    advance_key_offset;
+    logic [BQ_IDX_W-1:0] advance_q_proc_index;
+    logic [ROW_W-1:0]    advance_q_row;
+    logic [ROW_W-1:0]    advance_key_index;
 
     logic signed [SCALE_PROD_W-1:0] scaled_product;
     logic signed [SCALE_PROD_W-1:0] legacy_scaled_product;
@@ -266,6 +274,17 @@ module flash_core #(
         ((USE_CAUSAL_SKIP != 0) && causal_en && (next_kv_start_wide > block_end_row));
     assign score_should_skip =
         (USE_CAUSAL_SKIP != 0) && causal_en && (current_key_index > current_q_row);
+    assign advance_has_next_key = ((key_offset_q + 1'b1) < kv_len_q);
+    assign advance_has_next_query = ((q_proc_index_q + 1'b1) < q_block_len_q);
+    assign advance_has_next_score = advance_has_next_key || advance_has_next_query;
+    assign advance_key_offset =
+        advance_has_next_key ? (key_offset_q + 1'b1) : '0;
+    assign advance_q_proc_index =
+        advance_has_next_key ? q_proc_index_q : (q_proc_index_q + 1'b1);
+    assign advance_q_row = q_block_start_q + advance_q_proc_index;
+    assign advance_key_index = kv_start_q + advance_key_offset;
+    assign advance_score_should_skip =
+        (USE_CAUSAL_SKIP != 0) && causal_en && (advance_key_index > advance_q_row);
 
     assign legacy_scaled_product = (dot_value >>> FRAC_W) * scale_run_q;
     assign scaled_product = dot_value * scale_run_q;
@@ -407,7 +426,16 @@ module flash_core #(
                     if (kv_data_valid) begin
                         q_proc_index_q <= '0;
                         key_offset_q   <= '0;
-                        state_q        <= ST_PREP_KEY;
+                        if (score_should_skip) begin
+                            state_q <= ST_ADVANCE_SCORE;
+                        end else begin
+                            for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
+                                q_work_data[seq_d] <= q_block[0][seq_d];
+                                k_work_data[seq_d] <= k_tile[0][seq_d];
+                                v_work_data[seq_d] <= v_tile[0][seq_d];
+                            end
+                            state_q <= ST_DOT_START;
+                        end
                     end
                 end
 
@@ -445,13 +473,19 @@ module flash_core #(
                         acc_block[q_proc_index_q][seq_d] <= acc_next[seq_d];
                     end
 
-                    if ((key_offset_q + 1'b1) < kv_len_q) begin
-                        key_offset_q <= key_offset_q + 1'b1;
-                        state_q      <= ST_PREP_KEY;
-                    end else if ((q_proc_index_q + 1'b1) < q_block_len_q) begin
-                        q_proc_index_q <= q_proc_index_q + 1'b1;
-                        key_offset_q   <= '0;
-                        state_q        <= ST_PREP_KEY;
+                    if (advance_has_next_score) begin
+                        q_proc_index_q <= advance_q_proc_index;
+                        key_offset_q   <= advance_key_offset;
+                        if (advance_score_should_skip) begin
+                            state_q <= ST_ADVANCE_SCORE;
+                        end else begin
+                            for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
+                                q_work_data[seq_d] <= q_block[advance_q_proc_index][seq_d];
+                                k_work_data[seq_d] <= k_tile[advance_key_offset][seq_d];
+                                v_work_data[seq_d] <= v_tile[advance_key_offset][seq_d];
+                            end
+                            state_q <= ST_DOT_START;
+                        end
                     end else if (tile_last_for_block) begin
                         emit_index_q <= '0;
                         norm_index_q <= '0;
@@ -467,13 +501,19 @@ module flash_core #(
                 end
 
                 ST_ADVANCE_SCORE: begin
-                    if ((key_offset_q + 1'b1) < kv_len_q) begin
-                        key_offset_q <= key_offset_q + 1'b1;
-                        state_q      <= ST_PREP_KEY;
-                    end else if ((q_proc_index_q + 1'b1) < q_block_len_q) begin
-                        q_proc_index_q <= q_proc_index_q + 1'b1;
-                        key_offset_q   <= '0;
-                        state_q        <= ST_PREP_KEY;
+                    if (advance_has_next_score) begin
+                        q_proc_index_q <= advance_q_proc_index;
+                        key_offset_q   <= advance_key_offset;
+                        if (advance_score_should_skip) begin
+                            state_q <= ST_ADVANCE_SCORE;
+                        end else begin
+                            for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
+                                q_work_data[seq_d] <= q_block[advance_q_proc_index][seq_d];
+                                k_work_data[seq_d] <= k_tile[advance_key_offset][seq_d];
+                                v_work_data[seq_d] <= v_tile[advance_key_offset][seq_d];
+                            end
+                            state_q <= ST_DOT_START;
+                        end
                     end else if (tile_last_for_block) begin
                         emit_index_q <= '0;
                         norm_index_q <= '0;
