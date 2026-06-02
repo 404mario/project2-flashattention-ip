@@ -5,10 +5,11 @@ module flash_core #(
     parameter int D_MODEL         = 64,
     parameter int BK              = 16,
     parameter int DATA_W          = 16,
-    parameter int ACC_W           = 40,
+    parameter int ACC_W           = 36,
     parameter int FRAC_W          = 8,
     parameter int BQ              = 1,
     parameter int USE_DOT_TREE    = 0,
+    parameter int DOT_LANES       = D_MODEL,
     parameter int USE_CAUSAL_SKIP = 0,
     parameter int SOFTMAX_FRAC    = FRAC_W
 ) (
@@ -121,6 +122,11 @@ module flash_core #(
     logic [BQ_IDX_W-1:0] advance_q_proc_index;
     logic [ROW_W-1:0]    advance_q_row;
     logic [ROW_W-1:0]    advance_key_index;
+    logic [ROW_W:0]      causal_first_valid_q_wide;
+    logic [ROW_W:0]      causal_next_q_wide;
+    logic [ROW_W:0]      causal_jump_q_wide;
+    logic                causal_jump_has_score;
+    logic [BQ_IDX_W-1:0] causal_jump_q_proc_index;
 
     logic signed [SCALE_PROD_W-1:0] scaled_product;
     logic signed [SCALE_PROD_W-1:0] legacy_scaled_product;
@@ -191,7 +197,8 @@ module flash_core #(
         .D_MODEL(D_MODEL),
         .DATA_W(DATA_W),
         .ACC_W(ACC_W),
-        .USE_TREE(USE_DOT_TREE)
+        .USE_TREE(USE_DOT_TREE),
+        .DOT_LANES(DOT_LANES)
     ) u_dot_product (
         .clk(clk),
         .rst_n(rst_n),
@@ -285,6 +292,15 @@ module flash_core #(
     assign advance_key_index = kv_start_q + advance_key_offset;
     assign advance_score_should_skip =
         (USE_CAUSAL_SKIP != 0) && causal_en && (advance_key_index > advance_q_row);
+    assign causal_first_valid_q_wide =
+        (kv_start_q > q_block_start_q) ? ({1'b0, kv_start_q} - {1'b0, q_block_start_q}) :
+                                         {(ROW_W+1){1'b0}};
+    assign causal_next_q_wide = {1'b0, q_proc_index_q} + 1'b1;
+    assign causal_jump_q_wide =
+        (causal_first_valid_q_wide > causal_next_q_wide) ? causal_first_valid_q_wide :
+                                                           causal_next_q_wide;
+    assign causal_jump_has_score = (causal_jump_q_wide < q_block_len_q);
+    assign causal_jump_q_proc_index = causal_jump_q_wide[BQ_IDX_W-1:0];
 
     assign legacy_scaled_product = (dot_value >>> FRAC_W) * scale_run_q;
     assign scaled_product = dot_value * scale_run_q;
@@ -501,7 +517,21 @@ module flash_core #(
                 end
 
                 ST_ADVANCE_SCORE: begin
-                    if (advance_has_next_score) begin
+                    if (score_should_skip && causal_jump_has_score) begin
+                        q_proc_index_q <= causal_jump_q_proc_index;
+                        key_offset_q   <= '0;
+                        for (seq_d = 0; seq_d < D_MODEL; seq_d = seq_d + 1) begin
+                            q_work_data[seq_d] <= q_block[causal_jump_q_proc_index][seq_d];
+                            k_work_data[seq_d] <= k_tile[0][seq_d];
+                            v_work_data[seq_d] <= v_tile[0][seq_d];
+                        end
+                        state_q <= ST_DOT_START;
+                    end else if (score_should_skip) begin
+                        emit_index_q <= '0;
+                        norm_index_q <= '0;
+                        norm_write_index_q <= '0;
+                        state_q      <= ST_NORMALIZE;
+                    end else if (advance_has_next_score) begin
                         q_proc_index_q <= advance_q_proc_index;
                         key_offset_q   <= advance_key_offset;
                         if (advance_score_should_skip) begin

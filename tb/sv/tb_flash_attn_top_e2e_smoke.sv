@@ -5,7 +5,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int D_MODEL        = 8;
     parameter int BK             = 4;
     parameter int DATA_W         = 16;
-    parameter int ACC_W          = 40;
+    parameter int ACC_W          = 36;
     parameter int FRAC_W         = 8;
     parameter int AXI_DATA_W     = 64;
     parameter int SCALE_Q8_8     = 91;
@@ -13,6 +13,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int TIMEOUT_CYCLES = 200000;
     parameter int BQ             = 16;
     parameter int USE_DOT_TREE    = 1;
+    parameter int DOT_LANES       = 32;
     parameter int USE_CAUSAL_SKIP = 1;
     parameter int SOFTMAX_FRAC    = 16;
     parameter int MAX_CYCLES      = 0;
@@ -162,6 +163,7 @@ module tb_flash_attn_top_e2e_smoke;
         .AXI_DATA_W(AXI_DATA_W),
         .BQ(BQ),
         .USE_DOT_TREE(USE_DOT_TREE),
+        .DOT_LANES(DOT_LANES),
         .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
         .SOFTMAX_FRAC(SOFTMAX_FRAC)
     ) dut (

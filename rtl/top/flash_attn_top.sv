@@ -6,11 +6,12 @@ module flash_attn_top #(
     parameter int BK         = 16,
     parameter int DATA_W     = 16,
     parameter int FRAC_W     = 8,
-    parameter int ACC_W      = 40,
+    parameter int ACC_W      = 36,
     parameter int ADDR_W     = 64,
     parameter int AXI_DATA_W = 64,
     parameter int BQ         = 16,
     parameter int USE_DOT_TREE    = 1,
+    parameter int DOT_LANES       = 32,
     parameter int USE_CAUSAL_SKIP = 1,
     parameter int SOFTMAX_FRAC    = 16
 ) (
@@ -274,6 +275,7 @@ module flash_attn_top #(
         .FRAC_W(FRAC_W),
         .BQ(BQ),
         .USE_DOT_TREE(USE_DOT_TREE),
+        .DOT_LANES(DOT_LANES),
         .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
         .SOFTMAX_FRAC(SOFTMAX_FRAC)
     ) u_flash_core (
