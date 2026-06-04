@@ -123,6 +123,7 @@ module flash_core #(
     logic [ROW_W:0]   valid_len_clamped;
     logic             last_block;
     logic             tile_last_for_block;
+    logic             block_has_valid_q;
     logic             score_should_skip;
     logic             advance_has_next_key;
     logic             advance_has_next_query;
@@ -342,6 +343,7 @@ module flash_core #(
         (next_kv_start_wide >= S_LEN) ||
         (next_kv_start_wide >= valid_len_clamped) ||
         ((USE_CAUSAL_SKIP != 0) && causal_en && (next_kv_start_wide > block_end_row));
+    assign block_has_valid_q = ({1'b0, q_block_start_q} < valid_len_clamped);
     assign score_should_skip =
         ({1'b0, current_key_index} >= valid_len_clamped) ||
         ({1'b0, current_q_row} >= valid_len_clamped) ||
@@ -366,7 +368,10 @@ module flash_core #(
     assign causal_jump_q_wide =
         (causal_first_valid_q_wide > causal_next_q_wide) ? causal_first_valid_q_wide :
                                                            causal_next_q_wide;
-    assign causal_jump_has_score = (causal_jump_q_wide < q_block_len_q);
+    assign causal_jump_has_score =
+        (causal_jump_q_wide < q_block_len_q) &&
+        (({1'b0, q_block_start_q} + causal_jump_q_wide) < valid_len_clamped) &&
+        ({1'b0, kv_start_q} < valid_len_clamped);
     assign causal_jump_q_proc_index = causal_jump_q_wide[BQ_IDX_W-1:0];
 
     assign legacy_scaled_product = (dot_value >>> FRAC_W) * scale_run_q;
@@ -403,9 +408,11 @@ module flash_core #(
         kv_req_valid  = (state_q == ST_REQ_KV);
         kv_req_start  = kv_start_q;
         kv_req_len    = kv_len_q;
-        kv_data_ready = ((state_q == ST_ADVANCE_SCORE) || (state_q == ST_SCORE_UPDATE)) &&
-                        !((key_offset_q + 1'b1) < kv_len_q) &&
-                        !((q_proc_index_q + 1'b1) < q_block_len_q);
+        kv_data_ready =
+            ((state_q == ST_SCORE_UPDATE) && !advance_has_next_score) ||
+            ((state_q == ST_ADVANCE_SCORE) &&
+             (score_should_skip || !advance_has_next_score) &&
+             !(score_should_skip && causal_jump_has_score));
 
         o_valid = (state_q == ST_EMIT_O);
         o_row   = q_block_start_q + emit_index_q;
@@ -608,10 +615,18 @@ module flash_core #(
                         end
                         state_q <= ST_DOT_START;
                     end else if (score_should_skip) begin
-                        emit_index_q <= '0;
-                        norm_index_q <= '0;
-                        norm_write_index_q <= '0;
-                        state_q      <= ST_NORMALIZE;
+                        if (tile_last_for_block || !block_has_valid_q) begin
+                            emit_index_q <= '0;
+                            norm_index_q <= '0;
+                            norm_write_index_q <= '0;
+                            state_q      <= ST_NORMALIZE;
+                        end else begin
+                            kv_start_q      <= next_kv_start_wide[ROW_W-1:0];
+                            kv_len_q        <= calc_kv_len(next_kv_start_wide[ROW_W-1:0]);
+                            q_proc_index_q  <= '0;
+                            key_offset_q    <= '0;
+                            state_q         <= ST_REQ_KV;
+                        end
                     end else if (advance_has_next_score) begin
                         q_proc_index_q <= advance_q_proc_index;
                         key_offset_q   <= advance_key_offset;
