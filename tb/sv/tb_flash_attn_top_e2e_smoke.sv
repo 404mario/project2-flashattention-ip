@@ -16,6 +16,8 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int DOT_LANES       = 32;
     parameter int USE_CAUSAL_SKIP = 1;
     parameter int SOFTMAX_FRAC    = 16;
+    parameter int STATIC_SCALE_MODE = 1;
+    parameter int STATIC_SCALE_Q8_8 = SCALE_Q8_8;
     parameter int MAX_CYCLES      = 0;
     parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
@@ -165,7 +167,9 @@ module tb_flash_attn_top_e2e_smoke;
         .USE_DOT_TREE(USE_DOT_TREE),
         .DOT_LANES(DOT_LANES),
         .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
-        .SOFTMAX_FRAC(SOFTMAX_FRAC)
+        .SOFTMAX_FRAC(SOFTMAX_FRAC),
+        .STATIC_SCALE_MODE(STATIC_SCALE_MODE),
+        .STATIC_SCALE_Q8_8(STATIC_SCALE_Q8_8)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),

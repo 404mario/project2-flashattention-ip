@@ -11,7 +11,9 @@ module flash_core #(
     parameter int USE_DOT_TREE    = 0,
     parameter int DOT_LANES       = D_MODEL,
     parameter int USE_CAUSAL_SKIP = 0,
-    parameter int SOFTMAX_FRAC    = FRAC_W
+    parameter int SOFTMAX_FRAC    = FRAC_W,
+    parameter int STATIC_SCALE_MODE = 0,
+    parameter int STATIC_SCALE_Q8_8 = 32
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -61,6 +63,7 @@ module flash_core #(
     localparam int SCALE_PROD_W = ACC_W + 32;
     localparam int SCALE_SHIFT  = (SOFTMAX_FRAC == FRAC_W) ? (2 * FRAC_W) :
                                   (3 * FRAC_W - SOFTMAX_FRAC);
+    localparam logic signed [31:0] STATIC_SCALE_VALUE = STATIC_SCALE_Q8_8;
 
     typedef enum logic [3:0] {
         ST_IDLE,
@@ -134,6 +137,8 @@ module flash_core #(
     logic signed [ACC_W-1:0] masked_score;
     logic score_valid;
     logic signed [31:0] scale_run_q;
+    logic signed [31:0] scale_mult;
+    logic signed [31:0] scale_start_value;
 
     logic signed [ACC_W-1:0] m_state_q;
     logic [L_W-1:0] l_state_q;
@@ -302,11 +307,37 @@ module flash_core #(
     assign causal_jump_has_score = (causal_jump_q_wide < q_block_len_q);
     assign causal_jump_q_proc_index = causal_jump_q_wide[BQ_IDX_W-1:0];
 
-    assign legacy_scaled_product = (dot_value >>> FRAC_W) * scale_run_q;
-    assign scaled_product = dot_value * scale_run_q;
-    assign scaled_score = (SOFTMAX_FRAC == FRAC_W) ?
-                          (legacy_scaled_product >>> FRAC_W) :
-                          (scaled_product >>> SCALE_SHIFT);
+    assign scale_mult = (STATIC_SCALE_MODE != 0) ? STATIC_SCALE_VALUE : scale_run_q;
+    assign scale_start_value = (STATIC_SCALE_MODE != 0) ? STATIC_SCALE_VALUE : scale;
+    generate
+        if ((STATIC_SCALE_MODE != 0) && (FRAC_W == 8) && (SOFTMAX_FRAC == 16) &&
+            (STATIC_SCALE_Q8_8 == 32)) begin : gen_static_scale_shift_32
+            assign legacy_scaled_product = '0;
+            assign scaled_product = '0;
+            assign scaled_score = dot_value >>> 3;
+        end else if ((STATIC_SCALE_MODE != 0) && (FRAC_W == 8) && (SOFTMAX_FRAC == 16) &&
+                     (STATIC_SCALE_Q8_8 == 64)) begin : gen_static_scale_shift_64
+            assign legacy_scaled_product = '0;
+            assign scaled_product = '0;
+            assign scaled_score = dot_value >>> 2;
+        end else if ((STATIC_SCALE_MODE != 0) && (FRAC_W == 8) && (SOFTMAX_FRAC == 16) &&
+                     (STATIC_SCALE_Q8_8 == 128)) begin : gen_static_scale_shift_128
+            assign legacy_scaled_product = '0;
+            assign scaled_product = '0;
+            assign scaled_score = dot_value >>> 1;
+        end else if ((STATIC_SCALE_MODE != 0) && (FRAC_W == 8) && (SOFTMAX_FRAC == 16) &&
+                     (STATIC_SCALE_Q8_8 == 256)) begin : gen_static_scale_shift_256
+            assign legacy_scaled_product = '0;
+            assign scaled_product = '0;
+            assign scaled_score = dot_value;
+        end else begin : gen_runtime_scale_mult
+            assign legacy_scaled_product = (dot_value >>> FRAC_W) * scale_mult;
+            assign scaled_product = dot_value * scale_mult;
+            assign scaled_score = (SOFTMAX_FRAC == FRAC_W) ?
+                                  (legacy_scaled_product >>> FRAC_W) :
+                                  (scaled_product >>> SCALE_SHIFT);
+        end
+    endgenerate
     assign old_scale = old_scale_softmax;
     assign new_weight = new_weight_softmax;
 
@@ -399,7 +430,7 @@ module flash_core #(
                         key_offset_q    <= '0;
                         norm_index_q    <= '0;
                         norm_write_index_q <= '0;
-                        scale_run_q     <= scale;
+                        scale_run_q     <= scale_start_value;
                         state_q         <= ST_REQ_Q;
                     end
                 end
