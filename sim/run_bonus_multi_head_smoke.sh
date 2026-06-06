@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD="$ROOT/sim_build"
+TB_INCLUDE="$ROOT/tb/sv"
+mkdir -p "$BUILD"
+
+SOURCES=(
+    "$ROOT/rtl/include/flash_attn_pkg.sv"
+    "$ROOT/rtl/include/fp8_e4m3_pkg.sv"
+    "$ROOT/rtl/include/bf16_pkg.sv"
+    "$ROOT/rtl/axi/axi_lite_regs.sv"
+    "$ROOT/rtl/axi/axi_master_read.sv"
+    "$ROOT/rtl/axi/axi_master_write.sv"
+    "$ROOT/rtl/axi/dma_controller.sv"
+    "$ROOT/rtl/axi/dma_controller_fp8.sv"
+    "$ROOT/rtl/axi/dma_controller_bf16.sv"
+    "$ROOT/rtl/core/tile_scheduler.sv"
+    "$ROOT/rtl/mem/row_buffer.sv"
+    "$ROOT/rtl/mem/tile_buffer.sv"
+    "$ROOT/rtl/core/dot_product_engine.sv"
+    "$ROOT/rtl/core/causal_mask_unit.sv"
+    "$ROOT/rtl/core/online_softmax_engine.sv"
+    "$ROOT/rtl/core/value_accumulator.sv"
+    "$ROOT/rtl/core/quantize_saturate.sv"
+    "$ROOT/rtl/core/normalizer.sv"
+    "$ROOT/rtl/core/flash_core.sv"
+    "$ROOT/rtl/top/flash_attn_top.sv"
+    "$ROOT/tb/sv/tb_flash_attn_top_e2e_smoke.sv"
+)
+
+run_case() {
+    local name="$1"
+    local s_len="$2"
+    local d_model="$3"
+    local bk="$4"
+    local bq="$5"
+    local head_count="$6"
+    local tensor_bytes=$((s_len * d_model * 2))
+    local elems=$((s_len * d_model))
+    local out="$BUILD/tb_flash_attn_top_e2e_${name}.vvp"
+    local hex="$BUILD/tb_flash_attn_top_e2e_${name}_o.hex"
+    local log="${out%.vvp}.log"
+
+    echo "=== bonus multi-head: $name S=$s_len D=$d_model BK=$bk BQ=$bq HEADS=$head_count ==="
+    iverilog -g2012 -Wall \
+        -I "$TB_INCLUDE" \
+        -s tb_flash_attn_top_e2e_smoke \
+        -P tb_flash_attn_top_e2e_smoke.S_LEN="$s_len" \
+        -P tb_flash_attn_top_e2e_smoke.D_MODEL="$d_model" \
+        -P tb_flash_attn_top_e2e_smoke.BK="$bk" \
+        -P tb_flash_attn_top_e2e_smoke.BQ="$bq" \
+        -P tb_flash_attn_top_e2e_smoke.SOFTMAX_FRAC=16 \
+        -P tb_flash_attn_top_e2e_smoke.SCALE_Q8_8=91 \
+        -P tb_flash_attn_top_e2e_smoke.HEAD_COUNT="$head_count" \
+        -P tb_flash_attn_top_e2e_smoke.HEAD_STRIDE_BYTES="$tensor_bytes" \
+        -P tb_flash_attn_top_e2e_smoke.CHECK_BITEXACT=0 \
+        -P tb_flash_attn_top_e2e_smoke.TIMEOUT_CYCLES=1000000 \
+        -o "$out" \
+        "${SOURCES[@]}"
+
+    vvp "$out" "+OUT_HEX=$hex" 2>&1 | tee "$log"
+    if grep -qE "FAIL|FATAL" "$log"; then
+        echo "ERROR: multi-head smoke reported FAIL/FATAL" >&2
+        exit 1
+    fi
+
+    for ((head = 0; head < head_count; head++)); do
+        python "$ROOT/model/check_top_e2e_output.py" \
+            --hex "$hex" \
+            --hex-offset "$((head * elems))" \
+            --s-len "$s_len" \
+            --d-model "$d_model" \
+            --bk "$bk" \
+            --scale-q8-8 91 \
+            --frac-w 8 \
+            --softmax-frac 16 \
+            --valid-len "$s_len" \
+            --head-index "$head" \
+            --check-fp32
+    done
+}
+
+run_case "multi_head_h4_small" 8 8 4 4 4
+run_case "multi_head_h8_small" 8 8 4 4 8
+
+echo "Bonus multi-head smoke checks passed."

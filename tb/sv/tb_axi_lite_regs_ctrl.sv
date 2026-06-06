@@ -24,6 +24,14 @@ module tb_axi_lite_regs_ctrl;
     localparam logic [31:0] REG_RD_BYTES_H   = 32'h48;
     localparam logic [31:0] REG_WR_BYTES_L   = 32'h4c;
     localparam logic [31:0] REG_WR_BYTES_H   = 32'h50;
+    localparam logic [31:0] REG_VALID_LEN    = 32'h54;
+    localparam logic [31:0] REG_TASK_COUNT   = 32'h58;
+    localparam logic [31:0] REG_TASK_STRIDE  = 32'h5c;
+    localparam logic [31:0] REG_DROPOUT_CFG  = 32'h60;
+    localparam logic [31:0] REG_DROPOUT_SEED = 32'h64;
+    localparam logic [31:0] REG_DROPOUT_SCALE = 32'h68;
+    localparam logic [31:0] REG_HEAD_COUNT    = 32'h6c;
+    localparam logic [31:0] REG_HEAD_STRIDE   = 32'h70;
 
     localparam logic [31:0] CTRL_START       = 32'h0000_0001;
     localparam logic [31:0] CTRL_SOFT_RESET  = 32'h0000_0002;
@@ -65,6 +73,15 @@ module tb_axi_lite_regs_ctrl;
     wire [31:0] stride_bytes;
     wire signed [31:0] neg_large;
     wire signed [31:0] scale;
+    wire [31:0] valid_len;
+    wire [31:0] task_count;
+    wire [31:0] task_stride_bytes;
+    wire dropout_en;
+    wire [15:0] dropout_threshold;
+    wire [15:0] dropout_seed;
+    wire [15:0] dropout_scale_q8_8;
+    wire [31:0] head_count;
+    wire [31:0] head_stride_bytes;
     logic busy;
     logic done;
     logic error;
@@ -79,6 +96,7 @@ module tb_axi_lite_regs_ctrl;
     axi_lite_regs #(
         .ADDR_W(ADDR_W),
         .DATA_W(DATA_W),
+        .S_LEN(256),
         .D_MODEL(D_MODEL)
     ) dut (
         .clk(clk),
@@ -111,6 +129,15 @@ module tb_axi_lite_regs_ctrl;
         .stride_bytes(stride_bytes),
         .neg_large(neg_large),
         .scale(scale),
+        .valid_len(valid_len),
+        .task_count(task_count),
+        .task_stride_bytes(task_stride_bytes),
+        .dropout_en(dropout_en),
+        .dropout_threshold(dropout_threshold),
+        .dropout_seed(dropout_seed),
+        .dropout_scale_q8_8(dropout_scale_q8_8),
+        .head_count(head_count),
+        .head_stride_bytes(head_stride_bytes),
         .busy(busy),
         .done(done),
         .error(error),
@@ -278,6 +305,22 @@ module tb_axi_lite_regs_ctrl;
         expect_eq("NEG_LARGE reset", data, 32'hffff_8000);
         axil_read(REG_SCALE, data);
         expect_eq("SCALE reset", data, 32'd32);
+        axil_read(REG_VALID_LEN, data);
+        expect_eq("VALID_LEN reset", data, 32'd256);
+        axil_read(REG_TASK_COUNT, data);
+        expect_eq("TASK_COUNT reset", data, 32'd1);
+        axil_read(REG_TASK_STRIDE, data);
+        expect_eq("TASK_STRIDE reset", data, 32'd32768);
+        axil_read(REG_DROPOUT_CFG, data);
+        expect_eq("DROPOUT_CFG reset", data, 32'd0);
+        axil_read(REG_DROPOUT_SEED, data);
+        expect_eq("DROPOUT_SEED reset", data, 32'h0000_ace1);
+        axil_read(REG_DROPOUT_SCALE, data);
+        expect_eq("DROPOUT_SCALE reset", data, 32'd256);
+        axil_read(REG_HEAD_COUNT, data);
+        expect_eq("HEAD_COUNT reset", data, 32'd1);
+        axil_read(REG_HEAD_STRIDE, data);
+        expect_eq("HEAD_STRIDE reset", data, 32'd32768);
 
         axil_write(REG_CFG, CFG_CAUSAL_EN);
         axil_read(REG_CFG, data);
@@ -291,6 +334,14 @@ module tb_axi_lite_regs_ctrl;
         axil_write(REG_STRIDE_BYTES, 32'd160);
         axil_write(REG_NEG_LARGE, 32'hffff_9000);
         axil_write(REG_SCALE, 32'd91);
+        axil_write(REG_VALID_LEN, 32'd37);
+        axil_write(REG_TASK_COUNT, 32'd3);
+        axil_write(REG_TASK_STRIDE, 32'd4096);
+        axil_write(REG_DROPOUT_CFG, 32'h8000_0001);
+        axil_write(REG_DROPOUT_SEED, 32'h0000_1234);
+        axil_write(REG_DROPOUT_SCALE, 32'd512);
+        axil_write(REG_HEAD_COUNT, 32'd4);
+        axil_write(REG_HEAD_STRIDE, 32'd8192);
 
         expect_eq("q_base output", q_base, 64'h1111_2222_3333_4444);
         expect_eq("k_base output", k_base, 64'h5555_6666_7777_8888);
@@ -299,6 +350,15 @@ module tb_axi_lite_regs_ctrl;
         expect_eq("stride output", stride_bytes, 32'd160);
         expect_eq("neg_large output", neg_large, 64'hffff_ffff_ffff_9000);
         expect_eq("scale output", scale, 32'd91);
+        expect_eq("valid_len output", valid_len, 32'd37);
+        expect_eq("task_count output", task_count, 32'd3);
+        expect_eq("task_stride output", task_stride_bytes, 32'd4096);
+        expect_eq("dropout_en output", dropout_en, 1'b1);
+        expect_eq("dropout_threshold output", dropout_threshold, 16'h8000);
+        expect_eq("dropout_seed output", dropout_seed, 16'h1234);
+        expect_eq("dropout_scale output", dropout_scale_q8_8, 16'd512);
+        expect_eq("head_count output", head_count, 32'd4);
+        expect_eq("head_stride output", head_stride_bytes, 32'd8192);
 
         axil_read(REG_CYCLES, data);
         expect_eq("CYCLES read", data, cycles);

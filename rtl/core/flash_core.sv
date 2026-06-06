@@ -13,7 +13,8 @@ module flash_core #(
     parameter int USE_CAUSAL_SKIP = 0,
     parameter int SOFTMAX_FRAC    = FRAC_W,
     parameter int STATIC_SCALE_MODE = 0,
-    parameter int STATIC_SCALE_Q8_8 = 32
+    parameter int STATIC_SCALE_Q8_8 = 32,
+    parameter int ENABLE_DROPOUT    = 1
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -26,6 +27,11 @@ module flash_core #(
     input  logic causal_en,
     input  logic signed [31:0] neg_large,
     input  logic signed [31:0] scale,
+    input  logic [31:0] valid_len,
+    input  logic dropout_en,
+    input  logic [15:0] dropout_threshold,
+    input  logic [15:0] dropout_seed,
+    input  logic [15:0] dropout_scale_q8_8,
 
     output logic q_req_valid,
     output logic [$clog2(S_LEN)-1:0] q_req_row,
@@ -62,8 +68,9 @@ module flash_core #(
     localparam int L_W          = ACC_W;
     localparam int SCALE_PROD_W = ACC_W + 32;
     localparam int SCALE_SHIFT  = (SOFTMAX_FRAC == FRAC_W) ? (2 * FRAC_W) :
-                                  (3 * FRAC_W - SOFTMAX_FRAC);
+                                 (3 * FRAC_W - SOFTMAX_FRAC);
     localparam logic signed [31:0] STATIC_SCALE_VALUE = STATIC_SCALE_Q8_8;
+    localparam logic [ROW_W:0] S_LEN_WIDE = S_LEN;
 
     typedef enum logic [3:0] {
         ST_IDLE,
@@ -114,8 +121,10 @@ module flash_core #(
     logic [ROW_W:0]   block_end_wide;
     logic [ROW_W:0]   next_block_start_wide;
     logic [ROW_W:0]   next_kv_start_wide;
+    logic [ROW_W:0]   valid_len_clamped;
     logic             last_block;
     logic             tile_last_for_block;
+    logic             block_has_valid_q;
     logic             score_should_skip;
     logic             advance_has_next_key;
     logic             advance_has_next_query;
@@ -148,6 +157,9 @@ module flash_core #(
     logic [WEIGHT_W-1:0] new_weight_softmax;
     logic [WEIGHT_W-1:0] old_scale;
     logic [WEIGHT_W-1:0] new_weight;
+    logic [WEIGHT_W-1:0] acc_new_weight;
+    logic [15:0] dropout_rand;
+    logic dropout_keep;
     logic signed [ACC_W-1:0] m_update_q;
     logic [L_W-1:0] l_update_q;
     logic [WEIGHT_W-1:0] old_scale_update_q;
@@ -188,6 +200,45 @@ module flash_core #(
                 calc_kv_len = BK[LEN_W-1:0];
             end else begin
                 calc_kv_len = remaining[LEN_W-1:0];
+            end
+        end
+    endfunction
+
+    function automatic logic [15:0] dropout_rand16(
+        input logic [ROW_W-1:0] query_index,
+        input logic [ROW_W-1:0] key_index,
+        input logic [15:0] seed
+    );
+        logic [31:0] x;
+        begin
+            x = {seed, seed ^ 16'hace1};
+            x = x ^ ({16'd0, query_index} << 5);
+            x = x ^ ({16'd0, query_index} << 13);
+            x = x ^ ({16'd0, key_index} << 3);
+            x = x ^ ({16'd0, key_index} << 17);
+            x = x ^ (x << 7);
+            x = x ^ (x >> 9);
+            x = x ^ (x << 8);
+            dropout_rand16 = x[15:0] ^ x[31:16];
+        end
+    endfunction
+
+    function automatic logic [WEIGHT_W-1:0] dropout_weight(
+        input logic [WEIGHT_W-1:0] weight,
+        input logic keep,
+        input logic [15:0] scale_q8_8
+    );
+        logic [WEIGHT_W+16:0] scaled;
+        begin
+            if (!keep) begin
+                dropout_weight = '0;
+            end else begin
+                scaled = (weight * scale_q8_8 + 17'd128) >> 8;
+                if (|scaled[WEIGHT_W+16:WEIGHT_W]) begin
+                    dropout_weight = {WEIGHT_W{1'b1}};
+                end else begin
+                    dropout_weight = scaled[WEIGHT_W-1:0];
+                end
             end
         end
     endfunction
@@ -281,11 +332,16 @@ module flash_core #(
     assign current_q_row = q_block_start_q + q_proc_index_q;
     assign current_key_index = kv_start_q + key_offset_q;
     assign next_kv_start_wide = {1'b0, kv_start_q} + BK;
+    assign valid_len_clamped = (valid_len > S_LEN) ? S_LEN_WIDE : valid_len[ROW_W:0];
     assign tile_last_for_block =
         (next_kv_start_wide >= S_LEN) ||
+        (next_kv_start_wide >= valid_len_clamped) ||
         ((USE_CAUSAL_SKIP != 0) && causal_en && (next_kv_start_wide > block_end_row));
+    assign block_has_valid_q = ({1'b0, q_block_start_q} < valid_len_clamped);
     assign score_should_skip =
-        (USE_CAUSAL_SKIP != 0) && causal_en && (current_key_index > current_q_row);
+        ({1'b0, current_key_index} >= valid_len_clamped) ||
+        ({1'b0, current_q_row} >= valid_len_clamped) ||
+        ((USE_CAUSAL_SKIP != 0) && causal_en && (current_key_index > current_q_row));
     assign advance_has_next_key = ((key_offset_q + 1'b1) < kv_len_q);
     assign advance_has_next_query = ((q_proc_index_q + 1'b1) < q_block_len_q);
     assign advance_has_next_score = advance_has_next_key || advance_has_next_query;
@@ -296,7 +352,9 @@ module flash_core #(
     assign advance_q_row = q_block_start_q + advance_q_proc_index;
     assign advance_key_index = kv_start_q + advance_key_offset;
     assign advance_score_should_skip =
-        (USE_CAUSAL_SKIP != 0) && causal_en && (advance_key_index > advance_q_row);
+        ({1'b0, advance_key_index} >= valid_len_clamped) ||
+        ({1'b0, advance_q_row} >= valid_len_clamped) ||
+        ((USE_CAUSAL_SKIP != 0) && causal_en && (advance_key_index > advance_q_row));
     assign causal_first_valid_q_wide =
         (kv_start_q > q_block_start_q) ? ({1'b0, kv_start_q} - {1'b0, q_block_start_q}) :
                                          {(ROW_W+1){1'b0}};
@@ -304,7 +362,10 @@ module flash_core #(
     assign causal_jump_q_wide =
         (causal_first_valid_q_wide > causal_next_q_wide) ? causal_first_valid_q_wide :
                                                            causal_next_q_wide;
-    assign causal_jump_has_score = (causal_jump_q_wide < q_block_len_q);
+    assign causal_jump_has_score =
+        (causal_jump_q_wide < q_block_len_q) &&
+        (({1'b0, q_block_start_q} + causal_jump_q_wide) < valid_len_clamped) &&
+        ({1'b0, kv_start_q} < valid_len_clamped);
     assign causal_jump_q_proc_index = causal_jump_q_wide[BQ_IDX_W-1:0];
 
     assign scale_mult = (STATIC_SCALE_MODE != 0) ? STATIC_SCALE_VALUE : scale_run_q;
@@ -341,6 +402,20 @@ module flash_core #(
     assign old_scale = old_scale_softmax;
     assign new_weight = new_weight_softmax;
 
+    generate
+        if (ENABLE_DROPOUT != 0) begin : gen_dropout_path
+            assign dropout_rand = dropout_rand16(current_q_row, current_key_index, dropout_seed);
+            assign dropout_keep = !dropout_en || (dropout_rand >= dropout_threshold);
+            assign acc_new_weight = dropout_en ?
+                                    dropout_weight(new_weight, dropout_keep, dropout_scale_q8_8) :
+                                    new_weight;
+        end else begin : gen_no_dropout_path
+            assign dropout_rand = '0;
+            assign dropout_keep = 1'b1;
+            assign acc_new_weight = new_weight;
+        end
+    endgenerate
+
     always_comb begin
         busy  = (state_q != ST_IDLE) && (state_q != ST_DONE);
         done  = (state_q == ST_DONE);
@@ -353,9 +428,11 @@ module flash_core #(
         kv_req_valid  = (state_q == ST_REQ_KV);
         kv_req_start  = kv_start_q;
         kv_req_len    = kv_len_q;
-        kv_data_ready = ((state_q == ST_ADVANCE_SCORE) || (state_q == ST_SCORE_UPDATE)) &&
-                        !((key_offset_q + 1'b1) < kv_len_q) &&
-                        !((q_proc_index_q + 1'b1) < q_block_len_q);
+        kv_data_ready =
+            ((state_q == ST_SCORE_UPDATE) && !advance_has_next_score) ||
+            ((state_q == ST_ADVANCE_SCORE) &&
+             (score_should_skip || !advance_has_next_score) &&
+             !(score_should_skip && causal_jump_has_score));
 
         o_valid = (state_q == ST_EMIT_O);
         o_row   = q_block_start_q + emit_index_q;
@@ -508,7 +585,7 @@ module flash_core #(
                         m_update_q           <= m_softmax_next;
                         l_update_q           <= l_softmax_next;
                         old_scale_update_q   <= old_scale_softmax;
-                        new_weight_update_q  <= new_weight_softmax;
+                        new_weight_update_q  <= acc_new_weight;
                         state_q              <= ST_SCORE_UPDATE;
                     end
                 end
@@ -558,10 +635,18 @@ module flash_core #(
                         end
                         state_q <= ST_DOT_START;
                     end else if (score_should_skip) begin
-                        emit_index_q <= '0;
-                        norm_index_q <= '0;
-                        norm_write_index_q <= '0;
-                        state_q      <= ST_NORMALIZE;
+                        if (tile_last_for_block || !block_has_valid_q) begin
+                            emit_index_q <= '0;
+                            norm_index_q <= '0;
+                            norm_write_index_q <= '0;
+                            state_q      <= ST_NORMALIZE;
+                        end else begin
+                            kv_start_q      <= next_kv_start_wide[ROW_W-1:0];
+                            kv_len_q        <= calc_kv_len(next_kv_start_wide[ROW_W-1:0]);
+                            q_proc_index_q  <= '0;
+                            key_offset_q    <= '0;
+                            state_q         <= ST_REQ_KV;
+                        end
                     end else if (advance_has_next_score) begin
                         q_proc_index_q <= advance_q_proc_index;
                         key_offset_q   <= advance_key_offset;

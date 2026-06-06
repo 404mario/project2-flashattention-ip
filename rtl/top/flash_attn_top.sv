@@ -14,8 +14,11 @@ module flash_attn_top #(
     parameter int DOT_LANES       = 32,
     parameter int USE_CAUSAL_SKIP = 1,
     parameter int SOFTMAX_FRAC    = 16,
+    parameter int FP8_E4M3_MODE   = 0,
+    parameter int BF16_IO_MODE    = 0,
     parameter int STATIC_SCALE_MODE = 1,
-    parameter int STATIC_SCALE_Q8_8 = 32
+    parameter int STATIC_SCALE_Q8_8 = 32,
+    parameter int ENABLE_DROPOUT    = 0
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -75,6 +78,9 @@ module flash_attn_top #(
     output logic irq
 );
 
+    localparam int CORE_DATA_W = ((FP8_E4M3_MODE != 0) || (BF16_IO_MODE != 0)) ? 16 : DATA_W;
+    localparam int CORE_FRAC_W = ((FP8_E4M3_MODE != 0) || (BF16_IO_MODE != 0)) ? 8 : FRAC_W;
+
     logic start_pulse;
     logic soft_reset;
     logic irq_en;
@@ -86,6 +92,15 @@ module flash_attn_top #(
     logic [31:0] stride_bytes;
     logic signed [31:0] neg_large;
     logic signed [31:0] scale;
+    logic [31:0] valid_len;
+    logic [31:0] task_count;
+    logic [31:0] task_stride_bytes;
+    logic dropout_en;
+    logic [15:0] dropout_threshold;
+    logic [15:0] dropout_seed;
+    logic [15:0] dropout_scale_q8_8;
+    logic [31:0] head_count;
+    logic [31:0] head_stride_bytes;
     logic [31:0] cycle_count_q;
     logic [63:0] rd_bytes_count_q;
     logic [63:0] wr_bytes_count_q;
@@ -103,8 +118,8 @@ module flash_attn_top #(
     logic [$clog2(S_LEN)-1:0] q_req_row;
     logic q_req_ready;
     logic q_data_valid;
-    logic signed [DATA_W-1:0] q_data [0:D_MODEL-1];
-    logic [D_MODEL*DATA_W-1:0] q_data_flat;
+    logic signed [CORE_DATA_W-1:0] q_data [0:D_MODEL-1];
+    logic [D_MODEL*CORE_DATA_W-1:0] q_data_flat;
     logic q_data_ready;
 
     logic kv_req_valid;
@@ -112,16 +127,16 @@ module flash_attn_top #(
     logic [$clog2(BK+1)-1:0]  kv_req_len;
     logic kv_req_ready;
     logic kv_data_valid;
-    logic signed [DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1];
-    logic signed [DATA_W-1:0] v_tile [0:BK-1][0:D_MODEL-1];
-    logic [BK*D_MODEL*DATA_W-1:0] k_tile_flat;
-    logic [BK*D_MODEL*DATA_W-1:0] v_tile_flat;
+    logic signed [CORE_DATA_W-1:0] k_tile [0:BK-1][0:D_MODEL-1];
+    logic signed [CORE_DATA_W-1:0] v_tile [0:BK-1][0:D_MODEL-1];
+    logic [BK*D_MODEL*CORE_DATA_W-1:0] k_tile_flat;
+    logic [BK*D_MODEL*CORE_DATA_W-1:0] v_tile_flat;
     logic kv_data_ready;
 
     logic o_valid;
     logic [$clog2(S_LEN)-1:0] o_row;
-    logic signed [DATA_W-1:0] o_data [0:D_MODEL-1];
-    logic [D_MODEL*DATA_W-1:0] o_data_flat;
+    logic signed [CORE_DATA_W-1:0] o_data [0:D_MODEL-1];
+    logic [D_MODEL*CORE_DATA_W-1:0] o_data_flat;
     logic o_ready;
 
     logic rd_req_valid;
@@ -151,6 +166,20 @@ module flash_attn_top #(
     logic work_rst_n;
     logic run_active_q;
     logic core_done_seen_q;
+    logic task_continue_pulse_q;
+    logic task_start_pulse;
+    logic [31:0] task_index_q;
+    logic [31:0] head_index_q;
+    logic [31:0] task_count_eff;
+    logic [31:0] head_count_eff;
+    logic [63:0] task_offset_q;
+    logic [63:0] head_offset_q;
+    logic [63:0] q_base_eff;
+    logic [63:0] k_base_eff;
+    logic [63:0] v_base_eff;
+    logic [63:0] o_base_eff;
+    logic current_task_done_pulse;
+    logic last_task_done_pulse;
     logic overall_busy;
     logic overall_done_pulse;
     logic overall_error;
@@ -161,20 +190,31 @@ module flash_attn_top #(
     assign irq        = irq_int;
 
     assign overall_busy       = run_active_q || core_busy || dma_busy || rd_busy || wr_busy;
-    assign overall_done_pulse = run_active_q && core_done_seen_q && !dma_busy && !rd_busy && !wr_busy;
+    assign current_task_done_pulse = run_active_q && core_done_seen_q && !dma_busy && !rd_busy && !wr_busy;
+    assign last_task_done_pulse = current_task_done_pulse &&
+                                  ((head_index_q + 32'd1) >= head_count_eff) &&
+                                  ((task_index_q + 32'd1) >= task_count_eff);
+    assign overall_done_pulse = last_task_done_pulse;
     assign overall_error      = core_error || dma_error || rd_error || wr_error;
+    assign task_count_eff     = (task_count == 32'd0) ? 32'd1 : task_count;
+    assign head_count_eff     = (head_count == 32'd0) ? 32'd1 : head_count;
+    assign q_base_eff         = q_base + task_offset_q + head_offset_q;
+    assign k_base_eff         = k_base + task_offset_q + head_offset_q;
+    assign v_base_eff         = v_base + task_offset_q + head_offset_q;
+    assign o_base_eff         = o_base + task_offset_q + head_offset_q;
+    assign task_start_pulse   = start_pulse || task_continue_pulse_q;
 
     always_comb begin
         for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
-            q_data[comb_col] = q_data_flat[comb_col * DATA_W +: DATA_W];
-            o_data[comb_col] = o_data_flat[comb_col * DATA_W +: DATA_W];
+            q_data[comb_col] = q_data_flat[comb_col * CORE_DATA_W +: CORE_DATA_W];
+            o_data[comb_col] = o_data_flat[comb_col * CORE_DATA_W +: CORE_DATA_W];
         end
         for (comb_row = 0; comb_row < BK; comb_row = comb_row + 1) begin
             for (comb_col = 0; comb_col < D_MODEL; comb_col = comb_col + 1) begin
                 k_tile[comb_row][comb_col] =
-                    k_tile_flat[((comb_row * D_MODEL + comb_col) * DATA_W) +: DATA_W];
+                    k_tile_flat[((comb_row * D_MODEL + comb_col) * CORE_DATA_W) +: CORE_DATA_W];
                 v_tile[comb_row][comb_col] =
-                    v_tile_flat[((comb_row * D_MODEL + comb_col) * DATA_W) +: DATA_W];
+                    v_tile_flat[((comb_row * D_MODEL + comb_col) * CORE_DATA_W) +: CORE_DATA_W];
             end
         end
     end
@@ -183,23 +223,55 @@ module flash_attn_top #(
         if (!rst_n) begin
             run_active_q     <= 1'b0;
             core_done_seen_q <= 1'b0;
+            task_continue_pulse_q <= 1'b0;
+            task_index_q     <= 32'd0;
+            head_index_q     <= 32'd0;
+            task_offset_q    <= 64'd0;
+            head_offset_q    <= 64'd0;
             cycle_count_q    <= 32'd0;
             rd_bytes_count_q <= 64'd0;
             wr_bytes_count_q <= 64'd0;
         end else if (soft_reset) begin
             run_active_q     <= 1'b0;
             core_done_seen_q <= 1'b0;
+            task_continue_pulse_q <= 1'b0;
+            task_index_q     <= 32'd0;
+            head_index_q     <= 32'd0;
+            task_offset_q    <= 64'd0;
+            head_offset_q    <= 64'd0;
             cycle_count_q    <= 32'd0;
             rd_bytes_count_q <= 64'd0;
             wr_bytes_count_q <= 64'd0;
         end else begin
+            task_continue_pulse_q <= 1'b0;
+
             if (start_pulse) begin
                 run_active_q     <= 1'b1;
                 core_done_seen_q <= 1'b0;
+                task_index_q     <= 32'd0;
+                head_index_q     <= 32'd0;
+                task_offset_q    <= 64'd0;
+                head_offset_q    <= 64'd0;
                 cycle_count_q    <= 32'd0;
                 rd_bytes_count_q <= 64'd0;
                 wr_bytes_count_q <= 64'd0;
             end else begin
+                if (current_task_done_pulse) begin
+                    core_done_seen_q <= 1'b0;
+                    if (last_task_done_pulse) begin
+                        run_active_q <= 1'b0;
+                    end else if ((head_index_q + 32'd1) < head_count_eff) begin
+                        head_index_q <= head_index_q + 32'd1;
+                        head_offset_q <= head_offset_q + {32'd0, head_stride_bytes};
+                        task_continue_pulse_q <= 1'b1;
+                    end else begin
+                        task_index_q <= task_index_q + 32'd1;
+                        task_offset_q <= task_offset_q + {32'd0, task_stride_bytes};
+                        head_index_q <= 32'd0;
+                        head_offset_q <= 64'd0;
+                        task_continue_pulse_q <= 1'b1;
+                    end
+                end
                 if (overall_done_pulse) begin
                     run_active_q <= 1'b0;
                 end
@@ -227,6 +299,7 @@ module flash_attn_top #(
     axi_lite_regs #(
         .ADDR_W(32),
         .DATA_W(32),
+        .S_LEN(S_LEN),
         .D_MODEL(D_MODEL)
     ) u_axi_lite_regs (
         .clk(clk),
@@ -259,6 +332,15 @@ module flash_attn_top #(
         .stride_bytes(stride_bytes),
         .neg_large(neg_large),
         .scale(scale),
+        .valid_len(valid_len),
+        .task_count(task_count),
+        .task_stride_bytes(task_stride_bytes),
+        .dropout_en(dropout_en),
+        .dropout_threshold(dropout_threshold),
+        .dropout_seed(dropout_seed),
+        .dropout_scale_q8_8(dropout_scale_q8_8),
+        .head_count(head_count),
+        .head_stride_bytes(head_stride_bytes),
         .busy(overall_busy),
         .done(overall_done_pulse),
         .error(overall_error),
@@ -272,26 +354,32 @@ module flash_attn_top #(
         .S_LEN(S_LEN),
         .D_MODEL(D_MODEL),
         .BK(BK),
-        .DATA_W(DATA_W),
+        .DATA_W(CORE_DATA_W),
         .ACC_W(ACC_W),
-        .FRAC_W(FRAC_W),
+        .FRAC_W(CORE_FRAC_W),
         .BQ(BQ),
         .USE_DOT_TREE(USE_DOT_TREE),
         .DOT_LANES(DOT_LANES),
         .USE_CAUSAL_SKIP(USE_CAUSAL_SKIP),
         .SOFTMAX_FRAC(SOFTMAX_FRAC),
         .STATIC_SCALE_MODE(STATIC_SCALE_MODE),
-        .STATIC_SCALE_Q8_8(STATIC_SCALE_Q8_8)
+        .STATIC_SCALE_Q8_8(STATIC_SCALE_Q8_8),
+        .ENABLE_DROPOUT(ENABLE_DROPOUT)
     ) u_flash_core (
         .clk(clk),
         .rst_n(work_rst_n),
-        .start(start_pulse),
+        .start(task_start_pulse),
         .busy(core_busy),
         .done(core_done),
         .error(core_error),
         .causal_en(causal_en),
         .neg_large(neg_large),
         .scale(scale),
+        .valid_len(valid_len),
+        .dropout_en(dropout_en),
+        .dropout_threshold(dropout_threshold),
+        .dropout_seed(dropout_seed),
+        .dropout_scale_q8_8(dropout_scale_q8_8),
         .q_req_valid(q_req_valid),
         .q_req_row(q_req_row),
         .q_req_ready(q_req_ready),
@@ -313,64 +401,186 @@ module flash_attn_top #(
         .o_ready(o_ready)
     );
 
-    dma_controller #(
-        .S_LEN(S_LEN),
-        .ADDR_W(ADDR_W),
-        .DATA_W(DATA_W),
-        .D_MODEL(D_MODEL),
-        .BK(BK),
-        .AXI_DATA_W(AXI_DATA_W)
-    ) u_dma_controller (
-        .clk(clk),
-        .rst_n(work_rst_n),
-        .start(start_pulse),
-        .busy(dma_busy),
-        .done(dma_done),
-        .error(dma_error),
-        .q_base(q_base),
-        .k_base(k_base),
-        .v_base(v_base),
-        .o_base(o_base),
-        .stride_bytes(stride_bytes),
-        .q_req_valid(q_req_valid),
-        .q_req_row(q_req_row),
-        .q_req_ready(q_req_ready),
-        .q_data_valid(q_data_valid),
-        .q_data(),
-        .q_data_flat(q_data_flat),
-        .q_data_ready(q_data_ready),
-        .kv_req_valid(kv_req_valid),
-        .kv_req_start(kv_req_start),
-        .kv_req_len(kv_req_len),
-        .kv_req_ready(kv_req_ready),
-        .kv_data_valid(kv_data_valid),
-        .k_tile(),
-        .v_tile(),
-        .k_tile_flat(k_tile_flat),
-        .v_tile_flat(v_tile_flat),
-        .kv_data_ready(kv_data_ready),
-        .o_valid(o_valid),
-        .o_row(o_row),
-        .o_data(o_data),
-        .o_data_flat(o_data_flat),
-        .o_ready(o_ready),
-        .rd_req_valid(rd_req_valid),
-        .rd_req_addr(rd_req_addr),
-        .rd_req_bytes(rd_req_bytes),
-        .rd_req_ready(rd_req_ready),
-        .rd_data_valid(rd_data_valid),
-        .rd_data(rd_data),
-        .rd_last(rd_last),
-        .rd_data_ready(rd_data_ready),
-        .wr_req_valid(wr_req_valid),
-        .wr_req_addr(wr_req_addr),
-        .wr_req_bytes(wr_req_bytes),
-        .wr_req_ready(wr_req_ready),
-        .wr_data_valid(wr_data_valid),
-        .wr_data(wr_data),
-        .wr_last(wr_last),
-        .wr_data_ready(wr_data_ready)
-    );
+    generate
+        if (BF16_IO_MODE != 0) begin : gen_bf16_dma
+            dma_controller_bf16 #(
+                .S_LEN(S_LEN),
+                .ADDR_W(ADDR_W),
+                .CORE_DATA_W(CORE_DATA_W),
+                .D_MODEL(D_MODEL),
+                .BK(BK),
+                .AXI_DATA_W(AXI_DATA_W)
+            ) u_dma_controller (
+                .clk(clk),
+                .rst_n(work_rst_n),
+                .start(task_start_pulse),
+                .busy(dma_busy),
+                .done(dma_done),
+                .error(dma_error),
+                .q_base(q_base_eff),
+                .k_base(k_base_eff),
+                .v_base(v_base_eff),
+                .o_base(o_base_eff),
+                .stride_bytes(stride_bytes),
+                .q_req_valid(q_req_valid),
+                .q_req_row(q_req_row),
+                .q_req_ready(q_req_ready),
+                .q_data_valid(q_data_valid),
+                .q_data(),
+                .q_data_flat(q_data_flat),
+                .q_data_ready(q_data_ready),
+                .kv_req_valid(kv_req_valid),
+                .kv_req_start(kv_req_start),
+                .kv_req_len(kv_req_len),
+                .kv_req_ready(kv_req_ready),
+                .kv_data_valid(kv_data_valid),
+                .k_tile(),
+                .v_tile(),
+                .k_tile_flat(k_tile_flat),
+                .v_tile_flat(v_tile_flat),
+                .kv_data_ready(kv_data_ready),
+                .o_valid(o_valid),
+                .o_row(o_row),
+                .o_data(o_data),
+                .o_data_flat(o_data_flat),
+                .o_ready(o_ready),
+                .rd_req_valid(rd_req_valid),
+                .rd_req_addr(rd_req_addr),
+                .rd_req_bytes(rd_req_bytes),
+                .rd_req_ready(rd_req_ready),
+                .rd_data_valid(rd_data_valid),
+                .rd_data(rd_data),
+                .rd_last(rd_last),
+                .rd_data_ready(rd_data_ready),
+                .wr_req_valid(wr_req_valid),
+                .wr_req_addr(wr_req_addr),
+                .wr_req_bytes(wr_req_bytes),
+                .wr_req_ready(wr_req_ready),
+                .wr_data_valid(wr_data_valid),
+                .wr_data(wr_data),
+                .wr_last(wr_last),
+                .wr_data_ready(wr_data_ready)
+            );
+        end else if (FP8_E4M3_MODE != 0) begin : gen_fp8_dma
+            dma_controller_fp8 #(
+                .S_LEN(S_LEN),
+                .ADDR_W(ADDR_W),
+                .CORE_DATA_W(CORE_DATA_W),
+                .D_MODEL(D_MODEL),
+                .BK(BK),
+                .AXI_DATA_W(AXI_DATA_W)
+            ) u_dma_controller (
+                .clk(clk),
+                .rst_n(work_rst_n),
+                .start(task_start_pulse),
+                .busy(dma_busy),
+                .done(dma_done),
+                .error(dma_error),
+                .q_base(q_base_eff),
+                .k_base(k_base_eff),
+                .v_base(v_base_eff),
+                .o_base(o_base_eff),
+                .stride_bytes(stride_bytes),
+                .q_req_valid(q_req_valid),
+                .q_req_row(q_req_row),
+                .q_req_ready(q_req_ready),
+                .q_data_valid(q_data_valid),
+                .q_data(),
+                .q_data_flat(q_data_flat),
+                .q_data_ready(q_data_ready),
+                .kv_req_valid(kv_req_valid),
+                .kv_req_start(kv_req_start),
+                .kv_req_len(kv_req_len),
+                .kv_req_ready(kv_req_ready),
+                .kv_data_valid(kv_data_valid),
+                .k_tile(),
+                .v_tile(),
+                .k_tile_flat(k_tile_flat),
+                .v_tile_flat(v_tile_flat),
+                .kv_data_ready(kv_data_ready),
+                .o_valid(o_valid),
+                .o_row(o_row),
+                .o_data(o_data),
+                .o_data_flat(o_data_flat),
+                .o_ready(o_ready),
+                .rd_req_valid(rd_req_valid),
+                .rd_req_addr(rd_req_addr),
+                .rd_req_bytes(rd_req_bytes),
+                .rd_req_ready(rd_req_ready),
+                .rd_data_valid(rd_data_valid),
+                .rd_data(rd_data),
+                .rd_last(rd_last),
+                .rd_data_ready(rd_data_ready),
+                .wr_req_valid(wr_req_valid),
+                .wr_req_addr(wr_req_addr),
+                .wr_req_bytes(wr_req_bytes),
+                .wr_req_ready(wr_req_ready),
+                .wr_data_valid(wr_data_valid),
+                .wr_data(wr_data),
+                .wr_last(wr_last),
+                .wr_data_ready(wr_data_ready)
+            );
+        end else begin : gen_fixed_dma
+            dma_controller #(
+                .S_LEN(S_LEN),
+                .ADDR_W(ADDR_W),
+                .DATA_W(CORE_DATA_W),
+                .D_MODEL(D_MODEL),
+                .BK(BK),
+                .AXI_DATA_W(AXI_DATA_W)
+            ) u_dma_controller (
+                .clk(clk),
+                .rst_n(work_rst_n),
+                .start(task_start_pulse),
+                .busy(dma_busy),
+                .done(dma_done),
+                .error(dma_error),
+                .q_base(q_base_eff),
+                .k_base(k_base_eff),
+                .v_base(v_base_eff),
+                .o_base(o_base_eff),
+                .stride_bytes(stride_bytes),
+                .q_req_valid(q_req_valid),
+                .q_req_row(q_req_row),
+                .q_req_ready(q_req_ready),
+                .q_data_valid(q_data_valid),
+                .q_data(),
+                .q_data_flat(q_data_flat),
+                .q_data_ready(q_data_ready),
+                .kv_req_valid(kv_req_valid),
+                .kv_req_start(kv_req_start),
+                .kv_req_len(kv_req_len),
+                .kv_req_ready(kv_req_ready),
+                .kv_data_valid(kv_data_valid),
+                .k_tile(),
+                .v_tile(),
+                .k_tile_flat(k_tile_flat),
+                .v_tile_flat(v_tile_flat),
+                .kv_data_ready(kv_data_ready),
+                .o_valid(o_valid),
+                .o_row(o_row),
+                .o_data(o_data),
+                .o_data_flat(o_data_flat),
+                .o_ready(o_ready),
+                .rd_req_valid(rd_req_valid),
+                .rd_req_addr(rd_req_addr),
+                .rd_req_bytes(rd_req_bytes),
+                .rd_req_ready(rd_req_ready),
+                .rd_data_valid(rd_data_valid),
+                .rd_data(rd_data),
+                .rd_last(rd_last),
+                .rd_data_ready(rd_data_ready),
+                .wr_req_valid(wr_req_valid),
+                .wr_req_addr(wr_req_addr),
+                .wr_req_bytes(wr_req_bytes),
+                .wr_req_ready(wr_req_ready),
+                .wr_data_valid(wr_data_valid),
+                .wr_data(wr_data),
+                .wr_last(wr_last),
+                .wr_data_ready(wr_data_ready)
+            );
+        end
+    endgenerate
 
     axi_master_read #(
         .ADDR_W(ADDR_W),
