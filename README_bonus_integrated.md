@@ -1,10 +1,11 @@
 # Integrated Bonus Branch On PPA Baseline
 
-Branch: `codex-bonus-integrated-ppa-skeleton`
+Branch: `codex-bonus-integrated-static-scale-fmax`
 
-This branch is the unified bonus integration branch rebuilt from `codex-baseline-ppa-fix`,
-the PPA-passing baseline. The goal is to preserve the baseline timing/area/performance path
-while adding optional bonus modes behind registers, parameters, or separate wrappers.
+This branch is the unified bonus integration branch rebuilt from
+`codex-baseline-core-pipeline-fmax` commit `9d1d4d8`, the latest optimized baseline skeleton.
+The goal is to preserve the baseline timing/area/performance path while adding optional
+bonus modes behind registers, parameters, or separate wrappers.
 
 ## Claimed / Ported Items
 
@@ -66,4 +67,6 @@ Full-size random-vector smoke for the synthesis-friendly configuration:
 bash ./sim/run_bonus_synth_timing_smoke.sh
 ```
 
-See `reports/bonus_results.md` for cycles, bytes, and error evidence.
+See `reports/bonus_results.md` for cycles, bytes, and error evidence. See
+`reports/submission_evidence.md` for the submission evidence index, waveform list, and
+handout requirement mapping.

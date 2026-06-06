@@ -8,6 +8,7 @@ venv/
 sim_build/
 results.xml
 *.vcd
+!reports/waves/*.vcd
 *.fst
 *.ghw
 *.wlf

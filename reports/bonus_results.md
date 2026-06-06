@@ -1,15 +1,16 @@
 # Unified Bonus Results
 
-Branch: `codex-bonus-integrated-ppa-skeleton`
+Branch: `codex-bonus-integrated-static-scale-fmax`
 
 This file records tracked simulation evidence for the integrated bonus branch rebuilt on top
-of the PPA-passing baseline. Raw simulator outputs under `sim_build/` remain ignored by Git.
+of the static-scale optimized baseline skeleton. Raw simulator outputs under `sim_build/`
+remain ignored by Git; compact waveform evidence is tracked under `reports/waves/`.
 
 ## Baseline Reference
 
 | Case | Shape | Cycles | RD_BYTES | WR_BYTES | FP32 MAE | FP32 MaxE |
 |---|---:|---:|---:|---:|---:|---:|
-| AXI-Lite + AXI master/DMA top E2E | S=256,D=64,BK=16,BQ=16 | 269808 | 589824 | 32768 | 0.000097 | 0.054688 |
+| AXI-Lite + AXI master/DMA top E2E | S=256,D=64,BK=16,BQ=16 | 233312 | 589824 | 32768 | 0.000015 | 0.003906 |
 
 Acceptance thresholds:
 
@@ -38,27 +39,27 @@ The table below is updated after running the quick scripts on this branch.
 
 | Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | FP32 MAE | FP32 MaxE |
 |---|---:|---|---|---:|---:|---:|---:|---:|
-| Q8.8 small top E2E | S=8,D=8,BK=4,BQ=16 | default | PASS | 456 | 384 | 128 | 0.000183 | 0.003906 |
-| Padding mask top E2E | S=16,D=8,BK=4,BQ=4 | VALID_LEN=5 | PASS | 827 | 1152 | 256 | 0.000092 | 0.003906 |
-| Q6.10 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=10 | PASS | 1388 | 1536 | 256 | 0.000046 | 0.000977 |
-| Q4.12 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=12 | PASS | 1388 | 1536 | 256 | 0.000053 | 0.000244 |
-| Q8.8 medium top E2E | S=32,D=16,BK=8,BQ=8 | default | PASS | 4780 | 6144 | 1024 | 0.000038 | 0.003906 |
-| Configurable S smoke | S=64,D=16,BK=8,BQ=16 | VALID_LEN=64 | PASS | 15152 | 12288 | 2048 | 0.000031 | 0.003906 |
-| Configurable S smoke | S=128,D=16,BK=8,BQ=16 | VALID_LEN=128 | PASS | 53920 | 40960 | 4096 | 0.000017 | 0.003906 |
-| Task queue smoke | S=8,D=8,BK=4,BQ=4 | TASK_COUNT=2 | PASS | 934 | 1024 | 256 | <= 0.000183 | 0.003906 |
-| AXI4-Stream smoke | S=8,D=8,BK=4 | stream wrapper | PASS | wait=587 | n/a | n/a | 0.000183 | 0.003906 |
-| Dropout small smoke | S=8,D=8,BK=4,BQ=4 | DROPOUT_EN=1 | PASS | 466 | 512 | 128 | 0.001404 | 0.007812 |
-| Dropout medium smoke | S=32,D=16,BK=8,BQ=8 | DROPOUT_EN=1 | PASS | 4780 | 6144 | 1024 | 0.000053 | 0.003906 |
-| Multi-head smoke | S=8,D=8,BK=4,BQ=4 | H=4 | PASS | 1870 | 2048 | 512 | <= 0.000183 | 0.003906 |
-| Multi-head smoke | S=8,D=8,BK=4,BQ=4 | H=8 | PASS | 3742 | 4096 | 1024 | <= 0.000183 | 0.003906 |
-| INT8/Q4.4 low-precision smoke | S=8,D=8,BK=4,BQ=4 | DATA_W=8,FRAC_W=4 | PASS | 432 | 256 | 64 | 0.084961 | 0.250000 |
-| INT8/Q4.4 low-precision smoke | S=32,D=16,BK=8,BQ=8 | DATA_W=8,FRAC_W=4 | PASS | 4388 | 3072 | 512 | 0.046997 | 0.187500 |
-| FP8/E4M3 low-precision smoke | S=8,D=8,BK=4,BQ=4 | FP8_E4M3_MODE=1 | PASS | 432 | 256 | 64 | 0.001038 | 0.011719 |
-| FP8/E4M3 low-precision smoke | S=32,D=16,BK=8,BQ=8 | FP8_E4M3_MODE=1 | PASS | 4388 | 3072 | 512 | 0.000259 | 0.011719 |
-| BF16 I/O smoke | S=8,D=8,BK=4,BQ=4 | BF16_IO_MODE=1 | PASS | 466 | 512 | 128 | 0.000183 | 0.003906 |
-| BF16 I/O smoke | S=32,D=16,BK=8,BQ=8 | BF16_IO_MODE=1 | PASS | 4780 | 6144 | 1024 | 0.000038 | 0.003906 |
+| Q8.8 small top E2E | S=8,D=8,BK=4,BQ=16 | default | PASS | 335 | 384 | 128 | 0.000183 | 0.003906 |
+| Padding mask top E2E | S=16,D=8,BK=4,BQ=4 | VALID_LEN=5 | PASS | 542 | 896 | 256 | 0.000092 | 0.003906 |
+| Q6.10 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=10 | PASS | 1080 | 1536 | 256 | 0.000046 | 0.000977 |
+| Q4.12 fixed-format top E2E | S=16,D=8,BK=4,BQ=4 | FRAC_W=12 | PASS | 1080 | 1536 | 256 | 0.000053 | 0.000244 |
+| Q8.8 medium top E2E | S=32,D=16,BK=8,BQ=8 | default | PASS | 3528 | 6144 | 1024 | 0.000038 | 0.003906 |
+| Configurable S smoke | S=64,D=16,BK=8,BQ=16 | VALID_LEN=64 | PASS | 10092 | 12288 | 2048 | 0.000031 | 0.003906 |
+| Configurable S smoke | S=128,D=16,BK=8,BQ=16 | VALID_LEN=128 | PASS | 35608 | 40960 | 4096 | 0.000017 | 0.003906 |
+| Task queue smoke | S=8,D=8,BK=4,BQ=4 | TASK_COUNT=2 | PASS | 754 | 1024 | 256 | <= 0.000183 | 0.003906 |
+| AXI4-Stream smoke | S=8,D=8,BK=4 | stream wrapper | PASS | wait=497 | n/a | n/a | 0.000183 | 0.003906 |
+| Dropout small smoke | S=8,D=8,BK=4,BQ=4 | DROPOUT_EN=1 | PASS | 376 | 512 | 128 | 0.001404 | 0.007812 |
+| Dropout medium smoke | S=32,D=16,BK=8,BQ=8 | DROPOUT_EN=1 | PASS | 3528 | 6144 | 1024 | 0.000053 | 0.003906 |
+| Multi-head smoke | S=8,D=8,BK=4,BQ=4 | H=4 | PASS | 1510 | 2048 | 512 | <= 0.000183 | 0.003906 |
+| Multi-head smoke | S=8,D=8,BK=4,BQ=4 | H=8 | PASS | 3022 | 4096 | 1024 | <= 0.000183 | 0.003906 |
+| INT8/Q4.4 low-precision smoke | S=8,D=8,BK=4,BQ=4 | DATA_W=8,FRAC_W=4 | PASS | 342 | 256 | 64 | 0.084961 | 0.250000 |
+| INT8/Q4.4 low-precision smoke | S=32,D=16,BK=8,BQ=8 | DATA_W=8,FRAC_W=4 | PASS | 3136 | 3072 | 512 | 0.046997 | 0.187500 |
+| FP8/E4M3 low-precision smoke | S=8,D=8,BK=4,BQ=4 | FP8_E4M3_MODE=1 | PASS | 342 | 256 | 64 | 0.001038 | 0.011719 |
+| FP8/E4M3 low-precision smoke | S=32,D=16,BK=8,BQ=8 | FP8_E4M3_MODE=1 | PASS | 3136 | 3072 | 512 | 0.000259 | 0.011719 |
+| BF16 I/O smoke | S=8,D=8,BK=4,BQ=4 | BF16_IO_MODE=1 | PASS | 376 | 512 | 128 | 0.000183 | 0.003906 |
+| BF16 I/O smoke | S=32,D=16,BK=8,BQ=8 | BF16_IO_MODE=1 | PASS | 3528 | 6144 | 1024 | 0.000038 | 0.003906 |
 
-Default Q8.8 small/medium cycle counts match the PPA skeleton after the bonus ports.
+Default Q8.8 small/medium cycle counts match the static-scale skeleton after the bonus ports.
 Low-precision rows have zero error against the integer RTL mirror. INT8/Q4.4 is a lossy
 bandwidth trade-off against FP32; FP8/E4M3 keeps the quick-smoke FP32 MaxE below the
 baseline acceptance threshold while halving external tensor bytes.
@@ -73,15 +74,18 @@ is `reports/bonus_fullsize_summary.png`.
 
 | Case | Shape | Config | Result | Cycles | RD_BYTES | WR_BYTES | RTL MaxE | FP32 MAE | FP32 MaxE |
 |---|---:|---|---|---:|---:|---:|---:|---:|---:|
-| Q8.8 baseline full-size | S=256,D=64,BK=16,BQ=16 | default | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
-| Q8.8 random-vector full-size | S=256,D=64,BK=16,BQ=16 | RUN_VECTORS=1, supplied random Q/K/V | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000097 | 0.054688 |
-| BF16 I/O full-size | S=256,D=64,BK=16,BQ=16 | BF16_IO_MODE=1 | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
-| INT8/Q4.4 low-precision full-size | S=256,D=64,BK=16,BQ=16 | DATA_W=8,FRAC_W=4 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.005238 | 0.187500 |
-| FP8/E4M3 low-precision full-size | S=256,D=64,BK=16,BQ=16 | FP8_E4M3_MODE=1 | PASS | 232816 | 294912 | 16384 | 0.000000 | 0.000043 | 0.011719 |
-| Synthesis-friendly random-vector full-size | S=256,D=64,BK=16,BQ=16 | STATIC_SCALE_MODE=1,ENABLE_DROPOUT=0 | PASS | 269808 | 589824 | 32768 | 0.000000 | 0.000097 | 0.054688 |
+| Q8.8 baseline full-size | S=256,D=64,BK=16,BQ=16 | default, latest static-scale branch run | PASS | 233312 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
+| Q8.8 random-vector full-size | S=256,D=64,BK=16,BQ=16 | RUN_VECTORS=1, supplied random Q/K/V, latest branch run | PASS | 233312 | 589824 | 32768 | 0.000000 | 0.000097 | 0.054688 |
+| BF16 I/O full-size | S=256,D=64,BK=16,BQ=16 | BF16_IO_MODE=1, latest branch run | PASS | 233312 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
+| Synthesis-friendly full-size | S=256,D=64,BK=16,BQ=16 | STATIC_SCALE_MODE=1,ENABLE_DROPOUT=0 | PASS | 233312 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
 
-The VCD-enabled smoke run is available as `sim_build/wave_lowprecision_s8_d8.vcd`; a compact
-preview image is `reports/wave_lowprecision_s8_d8_preview.png`.
+Tracked VCD-enabled smoke runs are available under `reports/waves/`; compact preview images
+are available under `reports/`.
+
+Low-precision full-size comparison rows from earlier report drafts were intentionally not
+claimed as latest-branch full-size evidence in this revision. Current-branch low-precision
+quick checks and the tracked INT8/Q4.4 VCD pass, but the full-size low-precision refresh did
+not finish cleanly during this evidence pass.
 
 The synthesis-friendly full-size row was run with `sim/run_bonus_synth_timing_smoke.sh`. It
 keeps the same default Q8.8 external behavior while making the direct `flash_attn_top`
@@ -98,5 +102,6 @@ Additional report-ready evidence images:
 - `reports/wave_q8_causal_softmax_preview.png`: causal masking and online-softmax internal state waveform.
 
 The raw Q8.8 waveform for the two waveform previews is
-`sim_build/wave_q8_small_control_dma_softmax.vcd`.
-The raw BF16 I/O waveform is `sim_build/wave_bf16_s8_d8.vcd`.
+`reports/waves/wave_q8_s8_d8_control_dma_softmax.vcd`.
+The raw BF16 I/O waveform is `reports/waves/wave_bf16_s8_d8.vcd`.
+The raw lower-precision waveform is `reports/waves/wave_int8_q4_4_s8_d8.vcd`.

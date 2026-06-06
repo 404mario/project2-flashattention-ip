@@ -1,10 +1,10 @@
 # Unified Bonus Completion Matrix
 
-Branch: `codex-bonus-integrated-ppa-skeleton`
+Branch: `codex-bonus-integrated-static-scale-fmax`
 
-This branch is rebuilt from the PPA-passing baseline instead of directly editing the older
-`codex-bonus-integrated` branch. Every bonus claim below must keep the default baseline path
-available and rerunnable.
+This branch is rebuilt from `codex-baseline-core-pipeline-fmax` commit `9d1d4d8` instead of
+directly editing the older `codex-bonus-integrated` branch. Every bonus claim below must keep
+the default baseline path available and rerunnable.
 
 ## Current Status
 
@@ -27,17 +27,19 @@ Inherited from `codex-baseline-ppa-fix`:
 
 | Check | Result |
 |---|---:|
-| S=256,D=64 cycles | 269808 |
-| FP32 MAE | 0.000097 |
-| FP32 MaxE | 0.054688 |
-| Genus timing | 10 ns MET |
-| Gate equivalent | 1913697 |
+| S=256,D=64 cycles | 233312 |
+| FP32 MAE | 0.000015 |
+| FP32 MaxE | 0.003906 |
+| Genus timing | pending fresh bonus synthesis |
+| Gate equivalent | pending fresh bonus synthesis |
 
 ## Current Branch Evidence
 
 | Evidence | Location |
 |---|---|
 | Bonus result summary | `reports/bonus_results.md` |
+| Submission evidence index | `reports/submission_evidence.md` |
+| Tracked waveform files | `reports/waves/*.vcd` |
 | AXI-Lite bonus registers | `rtl/axi/axi_lite_regs.sv` |
 | DMA top bonus sequencing | `rtl/top/flash_attn_top.sv` |
 | FP8 DMA conversion path | `rtl/axi/dma_controller_fp8.sv` |
@@ -49,8 +51,8 @@ Inherited from `codex-baseline-ppa-fix`:
 | BF16 I/O quick checks | `sim/run_bonus_bf16_smoke.sh` |
 | Synthesis-friendly full-size random-vector check | `sim/run_bonus_synth_timing_smoke.sh` |
 
-Default Q8.8 smoke after the bonus ports must remain at the PPA skeleton values
-`S=8 -> 456 cycles` and `S=32 -> 4780 cycles`.
+Default Q8.8 smoke after the bonus ports must remain at the static-scale skeleton values
+`S=8 -> 335 cycles` and `S=32 -> 3528 cycles`.
 
 For re-synthesis after the integrated bonus area/timing report, keep the direct top-level
 defaults or explicitly set `STATIC_SCALE_MODE=1`, `STATIC_SCALE_Q8_8=32`, and
