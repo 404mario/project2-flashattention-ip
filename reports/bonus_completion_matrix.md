@@ -16,7 +16,7 @@ the default baseline path available and rerunnable.
 | 4 | Padding mask | Ported | AXI-Lite `VALID_LEN`, causal corner cases, and invalid-row zeroing. |
 | 5 | Other fixed-point formats | Ported | Q6.10/Q4.12 top E2E smoke with checker support. |
 | 6 | Dropout training mode | Ported | Deterministic mask, dropout scale, RTL mirror, and FP32 checker evidence. |
-| 7 | INT8/FP8 lower precision | Ported | INT8/Q4.4 and FP8/E4M3 top E2E smoke; FP8 converts at DMA boundary while default Q8.8 remains unchanged. |
+| 7 | INT8/FP8 lower precision | Ported | INT8/Q4.4 and FP8/E4M3 top E2E smoke plus full-size direct VVP evidence; FP8 converts at DMA boundary while default Q8.8 remains unchanged. |
 | 8 | AXI4-Stream interface | Ported | Stream wrapper smoke through `sim/run_bonus_axis_stream_smoke.sh`. |
 | 9 | DMA/task queue | Ported | `TASK_COUNT=2` smoke verifies chained START/DONE flow and per-task writes. |
 | 10 | Other optimization | Not claimed | Baseline optimization is not counted as a separate optional bonus. |
@@ -50,6 +50,7 @@ Inherited from `codex-baseline-ppa-fix`:
 | Low-precision quick checks | `sim/run_bonus_lowprecision_int8_smoke.sh` |
 | BF16 I/O quick checks | `sim/run_bonus_bf16_smoke.sh` |
 | Synthesis-friendly full-size random-vector check | `sim/run_bonus_synth_timing_smoke.sh` |
+| Full evidence run record | `reports/full_evidence_run_2026-06-07.md` |
 
 Default Q8.8 smoke after the bonus ports must remain at the static-scale skeleton values
 `S=8 -> 335 cycles` and `S=32 -> 3528 cycles`.

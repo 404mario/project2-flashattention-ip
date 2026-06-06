@@ -34,6 +34,7 @@ the static-scale baseline skeleton.
 | `RUN_FULL=1 ./sim/run_top_e2e_smoke.sh` | Full-size S=256,D=64,BK=16,BQ=16 default Q8.8 E2E | PASS |
 | `RUN_VECTORS=1 ./sim/run_top_e2e_smoke.sh` | Full-size S=256,D=64,BK=16,BQ=16 supplied random-vector E2E | PASS |
 | `RUN_FULL=1 ./sim/run_bonus_bf16_smoke.sh` | Full-size S=256,D=64,BK=16,BQ=16 BF16 I/O E2E | PASS |
+| Direct low-precision full-size VVP | Full-size S=256,D=64,BK=16,BQ=16 INT8/Q4.4 and FP8/E4M3 | PASS |
 
 Full-size result from the latest run:
 
@@ -42,6 +43,8 @@ Full-size result from the latest run:
 | Default generated tensors, S=256,D=64,BK=16,BQ=16 | 233312 | 589824 | 32768 | 0.000000 | 0.000000 | 0.000015 | 0.003906 |
 | Supplied random vectors, S=256,D=64,BK=16,BQ=16 | 233312 | 589824 | 32768 | 0.000000 | 0.000000 | 0.000097 | 0.054688 |
 | BF16 I/O tensors, S=256,D=64,BK=16,BQ=16 | 233312 | 589824 | 32768 | 0.000000 | 0.000000 | 0.000015 | 0.003906 |
+| INT8/Q4.4 tensors, S=256,D=64,BK=16,BQ=16 | 196320 | 294912 | 16384 | 0.000000 | 0.000000 | 0.005238 | 0.187500 |
+| FP8/E4M3 tensors, S=256,D=64,BK=16,BQ=16 | 196320 | 294912 | 16384 | 0.000000 | 0.000000 | 0.000043 | 0.011719 |
 
 Acceptance reference from the handout:
 
@@ -115,12 +118,13 @@ vvp sim_build/tb_flash_attn_top_e2e_lowprecision_s8_d8.vvp \
 4. Run `RUN_FULL=1 ./sim/run_top_e2e_smoke.sh` for default full-size evidence.
 5. Run `RUN_VECTORS=1 ./sim/run_top_e2e_smoke.sh` for supplied random-vector full-size evidence.
 6. Run `RUN_FULL=1 ./sim/run_bonus_bf16_smoke.sh` for BF16 I/O full-size evidence.
-7. Open the tracked VCD files under `reports/waves/` for waveform review.
-8. Attach fresh Genus reports separately after synthesis.
+7. Run the direct low-precision VVP cases recorded in `reports/full_evidence_run_2026-06-07.md`.
+8. Open the tracked VCD files under `reports/waves/` for waveform review.
+9. Attach fresh Genus reports separately after synthesis.
 
 ## Refresh Notes
 
-Current-branch low-precision quick checks and the tracked INT8/Q4.4 waveform pass. A
-full-size low-precision refresh was attempted during this evidence pass, but it did not
-finish cleanly and produced no usable PASS log, so low-precision full-size data is not
-claimed as latest-branch evidence here.
+Current-branch low-precision quick checks, tracked low-precision waveform, and direct
+low-precision full-size VVP cases pass. The combined low-precision script can still be slow
+or awkward under Windows shell pipelines, so the full-size evidence uses direct single-case
+VVP commands for reproducibility.

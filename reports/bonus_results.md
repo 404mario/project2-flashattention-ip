@@ -78,14 +78,17 @@ is `reports/bonus_fullsize_summary.png`.
 | Q8.8 random-vector full-size | S=256,D=64,BK=16,BQ=16 | RUN_VECTORS=1, supplied random Q/K/V, latest branch run | PASS | 233312 | 589824 | 32768 | 0.000000 | 0.000097 | 0.054688 |
 | BF16 I/O full-size | S=256,D=64,BK=16,BQ=16 | BF16_IO_MODE=1, latest branch run | PASS | 233312 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
 | Synthesis-friendly full-size | S=256,D=64,BK=16,BQ=16 | STATIC_SCALE_MODE=1,ENABLE_DROPOUT=0 | PASS | 233312 | 589824 | 32768 | 0.000000 | 0.000015 | 0.003906 |
+| INT8/Q4.4 low-precision full-size | S=256,D=64,BK=16,BQ=16 | DATA_W=8,FRAC_W=4, direct VVP latest branch run | PASS | 196320 | 294912 | 16384 | 0.000000 | 0.005238 | 0.187500 |
+| FP8/E4M3 low-precision full-size | S=256,D=64,BK=16,BQ=16 | FP8_E4M3_MODE=1, direct VVP latest branch run | PASS | 196320 | 294912 | 16384 | 0.000000 | 0.000043 | 0.011719 |
 
 Tracked VCD-enabled smoke runs are available under `reports/waves/`; compact preview images
 are available under `reports/`.
 
-Low-precision full-size comparison rows from earlier report drafts were intentionally not
-claimed as latest-branch full-size evidence in this revision. Current-branch low-precision
-quick checks and the tracked INT8/Q4.4 VCD pass, but the full-size low-precision refresh did
-not finish cleanly during this evidence pass.
+Low-precision full-size cases were run as direct single-case VVP commands after the full
+script pipeline timed out on Windows. FP8/E4M3 meets the baseline FP32 error threshold while
+halving external tensor bytes. INT8/Q4.4 is exact against the RTL mirror and reduces external
+traffic, but it is intentionally documented as a lossy bandwidth/precision exploration because
+its FP32 MaxE exceeds 0.10.
 
 The synthesis-friendly full-size row was run with `sim/run_bonus_synth_timing_smoke.sh`. It
 keeps the same default Q8.8 external behavior while making the direct `flash_attn_top`
