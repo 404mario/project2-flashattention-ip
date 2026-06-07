@@ -1,7 +1,8 @@
 # Full Evidence Run 2026-06-07
 
 Branch: `codex-bonus-integrated-static-scale-fmax`
-Commit under test: `b5cd997`
+Commit under test: current branch head, with full-size evidence originally recorded before
+the later simulation-script portability fix.
 
 This file records the complete simulation evidence set for the current integrated bonus
 branch. Genus synthesis evidence is intentionally separate.
@@ -11,7 +12,7 @@ branch. Genus synthesis evidence is intentionally separate.
 | Command | Scope | Result |
 |---|---|---|
 | `./sim/run_top_compile.sh` | RTL compile smoke | PASS |
-| `./sim/run_bonus_all.sh` | Integrated quick bonus suite | PASS |
+| `./sim/run_bonus_all.sh` | Integrated quick bonus suite, rerun after script portability fix | PASS |
 | `RUN_FULL=1 ./sim/run_top_e2e_smoke.sh` | Default Q8.8 full-size generated tensors | PASS |
 | `RUN_VECTORS=1 ./sim/run_top_e2e_smoke.sh` | Default Q8.8 full-size supplied random vectors | PASS |
 | `RUN_FULL=1 ./sim/run_bonus_bf16_smoke.sh` | BF16 I/O full-size | PASS |

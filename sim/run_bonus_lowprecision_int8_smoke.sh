@@ -2,8 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$ROOT/sim_build"
+BUILD="sim_build"
 TB_INCLUDE="$ROOT/tb/sv"
+source "$ROOT/sim/common.sh"
 mkdir -p "$BUILD"
 
 SOURCES=(
@@ -48,7 +49,7 @@ check_output() {
     local bk="$4"
     local scale="$5"
 
-    python "$ROOT/model/check_top_e2e_output.py" \
+    "$PYTHON_BIN" "$ROOT/model/check_top_e2e_output.py" \
         --hex "$hex_path" \
         --s-len "$s_len" \
         --d-model "$d_model" \
@@ -68,7 +69,7 @@ check_fp8_output() {
     local bk="$4"
     local scale="$5"
 
-    python "$ROOT/model/check_top_e2e_output.py" \
+    "$PYTHON_BIN" "$ROOT/model/check_top_e2e_output.py" \
         --hex "$hex_path" \
         --s-len "$s_len" \
         --d-model "$d_model" \

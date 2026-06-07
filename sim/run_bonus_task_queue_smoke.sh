@@ -2,8 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$ROOT/sim_build"
+BUILD="sim_build"
 TB_INCLUDE="$ROOT/tb/sv"
+source "$ROOT/sim/common.sh"
 mkdir -p "$BUILD"
 
 SOURCES=(
@@ -63,7 +64,7 @@ if grep -qE "FAIL|FATAL" "${OUT%.vvp}.log"; then
 fi
 
 for ((task = 0; task < TASK_COUNT; task++)); do
-    python "$ROOT/model/check_top_e2e_output.py" \
+    "$PYTHON_BIN" "$ROOT/model/check_top_e2e_output.py" \
         --hex "$HEX" \
         --hex-offset "$((task * ELEMS))" \
         --s-len "$S_LEN" \

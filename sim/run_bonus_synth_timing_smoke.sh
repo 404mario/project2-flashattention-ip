@@ -2,8 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$ROOT/sim_build"
+BUILD="sim_build"
 TB_INCLUDE="$ROOT/tb/sv"
+source "$ROOT/sim/common.sh"
 mkdir -p "$BUILD"
 
 SOURCES=(
@@ -64,7 +65,7 @@ if grep -qE "FAIL|FATAL" "$LOG"; then
     exit 1
 fi
 
-python "$ROOT/model/check_top_e2e_output.py" \
+"$PYTHON_BIN" "$ROOT/model/check_top_e2e_output.py" \
     --hex "$HEX" \
     --s-len 256 \
     --d-model 64 \

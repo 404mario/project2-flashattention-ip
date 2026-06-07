@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$ROOT/sim_build"
+BUILD="sim_build"
 mkdir -p "$BUILD"
 
 OUT="$BUILD/flash_attn_top_compile.vvp"

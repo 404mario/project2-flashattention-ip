@@ -1,7 +1,7 @@
 # Submission Evidence Index
 
 Branch: `codex-bonus-integrated-static-scale-fmax`  
-Commit: `f6ded9a229e827156454573f7e61f03338f2c4d5`  
+Commit: current branch head
 Baseline parent: `codex-baseline-core-pipeline-fmax` commit `9d1d4d8`
 
 This file is the non-synthesis submission evidence index for the integrated bonus branch.
@@ -24,8 +24,9 @@ attached separately from the synthesis run.
 
 ## Latest Run Evidence
 
-The latest integrated branch was verified on 2026-06-06 after merging all bonus features onto
-the static-scale baseline skeleton.
+The latest integrated branch was verified on 2026-06-07 after merging all bonus features onto
+the static-scale baseline skeleton. The quick-suite wrapper was also rerun after adding a
+portable Python resolver for Git Bash/Windows shells.
 
 | Command | Coverage | Result |
 |---|---|---|
