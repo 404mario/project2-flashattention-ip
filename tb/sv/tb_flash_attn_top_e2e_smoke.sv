@@ -125,7 +125,9 @@ module tb_flash_attn_top_e2e_smoke;
     int changed_count;
     int progress_pct;
     int use_vector_files;
+    int dump_vcd;
     string out_hex_path;
+    string vcd_path;
     string q_hex_path;
     string k_hex_path;
     string v_hex_path;
@@ -795,9 +797,21 @@ module tb_flash_attn_top_e2e_smoke;
 
     initial begin
         use_vector_files = 0;
+        dump_vcd = 0;
         out_hex_path = "sim_build/tb_flash_attn_top_e2e_output.hex";
+        vcd_path = "sim_build/tb_flash_attn_top_e2e_smoke.vcd";
         if (!$value$plusargs("OUT_HEX=%s", out_hex_path)) begin
             out_hex_path = "sim_build/tb_flash_attn_top_e2e_output.hex";
+        end
+        if (!$value$plusargs("DUMP_VCD=%d", dump_vcd)) begin
+            dump_vcd = 0;
+        end
+        if (!$value$plusargs("VCD_PATH=%s", vcd_path)) begin
+            vcd_path = "sim_build/tb_flash_attn_top_e2e_smoke.vcd";
+        end
+        if (dump_vcd != 0) begin
+            $dumpfile(vcd_path);
+            $dumpvars(0, tb_flash_attn_top_e2e_smoke);
         end
         if (!$value$plusargs("USE_VECTOR_FILES=%d", use_vector_files)) begin
             use_vector_files = 0;
