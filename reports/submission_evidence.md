@@ -4,10 +4,9 @@ Branch: `codex-bonus-integrated-static-scale-fmax`
 Commit: current branch head
 Baseline parent: `codex-baseline-core-pipeline-fmax` commit `9d1d4d8`
 
-This file is the non-synthesis submission evidence index for the integrated bonus branch.
-It maps the course handout requirements to tracked RTL, verification, report, image, and
-waveform artifacts in this branch. Genus timing, area, QoR, and power reports should be
-attached separately from the synthesis run.
+This file is the submission evidence index for the integrated bonus branch. It maps the
+course handout requirements to tracked RTL, verification, report, image, waveform, and
+Genus synthesis artifacts in this branch.
 
 ## Handout Requirement Map
 
@@ -16,6 +15,7 @@ attached separately from the synthesis run.
 | Complete RTL source | `rtl/include/`, `rtl/core/`, `rtl/axi/`, `rtl/top/` |
 | Runnable testbench and cases | `tb/sv/`, `tb/vectors/`, `sim/run_*.sh` |
 | Cadence scripts and SDC | `synth/genus.tcl`, `synth/constraints.sdc`, `synth/filelist.f`, `synth/run_genus.sh` |
+| Genus physical synthesis reports | `synth/reports_ispatial/*.rpt`, `reports/synthesis_summary.md` |
 | Design and bonus documentation | `README_bonus_integrated.md`, `README_bonus_axi_stream.md`, `README_bonus_dropout.md` |
 | Correctness report vs FP32 golden | `reports/bonus_results.md` |
 | Bonus item completion evidence | `reports/bonus_completion_matrix.md` |
@@ -54,6 +54,34 @@ Acceptance reference from the handout:
 | Mean absolute error | <= 0.03 | 0.000015 |
 | Max absolute error | <= 0.10 | 0.003906 |
 | Full-size latency | < 300000 cycles | 233312 cycles |
+
+## Synthesis Evidence
+
+The `bonus_6.6` Genus iSpatial run uses an 8 ns clock and is timing clean. The synthesis
+run was made at commit `f6ded9a`; later branch commits only add evidence files and script
+portability, not RTL changes.
+
+| Metric | Result |
+|---|---:|
+| Clock period | 8 ns |
+| Critical path slack | +1.3 ps |
+| TNS | 0.0 |
+| Violating paths | 0 |
+| Cell area | 7918810.862 |
+| Net area | 6315329.605 |
+| Total area | 14234140.467 |
+| Total power | 2.10594 W |
+
+Primary reports:
+
+| File | Purpose |
+|---|---|
+| `synth/reports_ispatial/10_qor.rpt` | Clock period, slack, TNS, violating paths, area summary |
+| `synth/reports_ispatial/20_area.rpt` | Hierarchical area report |
+| `synth/reports_ispatial/30_timing.rpt` | Critical path timing report |
+| `synth/reports_ispatial/40_power.rpt` | Power report |
+| `synth/reports_ispatial/50_check_design_post_synth.rpt` | Post-synthesis design checks |
+| `synth/reports_ispatial/60_check_timing_post_synth.rpt` | Post-synthesis timing lint checks |
 
 ## Bonus Evidence Map
 
