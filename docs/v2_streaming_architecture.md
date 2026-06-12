@@ -123,6 +123,53 @@ m       = m_new ;  acc_inner[d]=0 ; l_part=0
 
 ---
 
+## 6b. Stage 3 详细集成规格（flash_core_v2 FSM）
+
+Stage 0/1/2 已验证（黄金模型 + `dot_stream` + `softmax_combine`）。Stage 3 = 把它们装进
+新的 `flash_core` 控制，保留 baseline 的 DMA/AXI/tile-buffer/normalizer/emit（复用,不重写）。
+
+**保留 BQ-block 复用**（否则带宽爆,见 sweep 的 BQ4/BQ8）：一个 Q-block 装 BQ 行,每个 K/V tile
+载入一次、被 block 内所有（causal 允许的）行消费,再换下一个 tile。
+
+每行状态：`m_block[BQ]`、`l_block[BQ]`、`acc_block[BQ][D]`（仍是触发器,SRAM 不划算见 sram doc）。
+
+**FSM 状态（每个 Q-block）：**
+```
+ST_LOAD_Q      : DMA 载入 BQ 行 Q 到 q_block[BQ][D]
+ST_REQ_KV      : 请求当前 tile 的 K/V (kv_start)
+ST_WAIT_KV     : 等 tile 数据进 k_tile/v_tile buffer
+  (对 block 内每个 causal 有效行 r:)
+  ST_SCORE     : 把 tile 的 BK 个 key 经 dot_stream 流式打分(1/拍),
+                 scale+mask 后写入 score_buf[0..BK-1]; 跳过 j>i 的 key(causal)
+  ST_SCORE_DRAIN: 等 dot_stream 流水排空(LATENCY=7)后 score_buf 齐
+  ST_COMBINE   : 脉冲 softmax_combine(score_buf, v_tile, m/l/acc[r], row_first=该行首个tile)
+  ST_COMBINE_WAIT: 等 done; 写回 m/l/acc[r]
+  (行循环结束 → 下一 tile; tile 循环结束 → normalize)
+ST_NORMALIZE   : 对每行 acc[r][d]/l[r] 过 normalizer(复用,3级流水), D 拍/行
+ST_EMIT        : DMA 写回 O 行
+ST_NEXT_BLOCK  : 推进到下一 Q-block
+```
+
+**关键连线：**
+- `dot_stream`: q_vec=q_block[r], k_vec=k_tile[j], in_valid 在 ST_SCORE 每拍(非跳过 key)拉高;
+  out_valid 后 LATENCY 拍把 dot 经 scale+causal_mask → score_buf[j]。
+- `softmax_combine`: score_in=score_buf, v_tile=v_tile, m/l/acc_in=该行状态, row_first=该行是否首 tile;
+  done 后 m/l/acc_out 写回 m_block/l_block/acc_block[r]。
+- `normalizer`: 复用,acc/l 逐元素喂入。
+
+**cycle 模型（每 (row,tile) 对）：** ST_SCORE(~有效key数) + DRAIN(7) + COMBINE(~tile_len) + 握手(~3)
+≈ 2·BK + 12 ≈ 44 拍（BK=16,无重叠,保守）。causal (row,tile) 对 ≈ 2048 →
+≈ 90K + normalize/emit(256行×~75) ≈ **~110K cycles 保守**。重叠 score/combine 后可压到 ~60-70K。
+
+**优化（后续）：** 跨 (row,tile) 重叠 score-pass 与 combine（双 score_buf）；tile 内 score 与
+combine 流水重叠。先做无重叠版跑通,再加重叠。
+
+**验证顺序（迭代快）：** 先 small smoke(S=8,秒级)抓功能 bug → medium(S=32) → 一次 fullsize(S=256)
+量 cycles + 确认 MAE/MaxE。全程对比 baseline 自检 testbench。
+
+**风险：** dot_stream 流水 fill/drain 与 score_buf 时序;causal 跳过 key 时的 valid/索引;
+ACC_W=36 在 tile 内 BK=16 累加的溢出（§5,BK=16 恰好够,若调大 BK 需加宽或 tile 内分段）。
+
 ## 7. 开放问题
 - BK 是否调大（如 32）以减少 tile 数 / 合并次数？需平衡 score buffer 与 tile buffer 面积。
 - 阶段 A/B 重叠的具体流水深度（II=1 是否需要 V tile 双缓冲）。
