@@ -167,7 +167,9 @@ module softmax_combine #(
         end
     endfunction
 
-    typedef enum logic [1:0] { S_IDLE, S_MAC, S_MERGE } state_t;
+    // S_MOLD/S_MNEW = the two merge phases that TIME-SHARE the 64-wide multiplier
+    // array with S_MAC (resource sharing: 64 mults total instead of 64 MAC + 128 merge).
+    typedef enum logic [2:0] { S_IDLE, S_MAC, S_FIRST, S_MOLD, S_MNEW } state_t;
     state_t state_q;
 
     logic [LEN_W-1:0]        len_q;
@@ -190,7 +192,7 @@ module softmax_combine #(
             if ((mi < tile_len) && (score_in[mi] > max_comb)) max_comb = score_in[mi];
     end
 
-    // current-key MAC terms (stage B), combinational
+    // current-key weight (stage B), combinational
     logic [WEIGHT_W-1:0]     w_cur;
     assign w_cur = exp_w(score_in[j_q] - m_tile_q);
 
@@ -200,6 +202,27 @@ module softmax_combine #(
     assign m_new_comb = (m_state_q > m_tile_q) ? m_state_q : m_tile_q;
     assign corr_old   = exp_w(m_state_q - m_new_comb);
     assign corr_new   = exp_w(m_tile_q  - m_new_comb);
+
+    // ---- shared 64-wide multiplier array (operands muxed by state) ----
+    localparam int MULW = ACC_W + WEIGHT_W + 2;
+    logic signed [ACC_W-1:0]  mulA [0:D_MODEL-1];
+    logic [WEIGHT_W-1:0]      mulB;
+    logic signed [MULW-1:0]   mulP [0:D_MODEL-1];
+    int mk;
+    always_comb begin
+        // default S_MAC: v_j * w_cur
+        mulB = w_cur;
+        for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = $signed(v_tile[j_q][mk]);
+        if (state_q == S_MOLD) begin            // acc_state(old) * corr_old
+            mulB = corr_old;
+            for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = acc_state_q[mk];
+        end else if (state_q == S_MNEW) begin   // acc_inner * corr_new
+            mulB = corr_new;
+            for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = acc_inner_q[mk];
+        end
+        for (mk = 0; mk < D_MODEL; mk = mk + 1)
+            mulP[mk] = mulA[mk] * $signed({1'b0, mulB});
+    end
 
     assign busy  = (state_q != S_IDLE);
     assign m_out = m_state_q;
@@ -224,48 +247,44 @@ module softmax_combine #(
         end else begin
             done <= 1'b0;
             case (state_q)
-                S_IDLE: begin
-                    if (start) begin
-                        len_q    <= tile_len;
-                        first_q  <= row_first;
-                        m_tile_q <= max_comb;
-                        j_q      <= '0;
-                        l_part_q <= '0;
-                        for (d = 0; d < D_MODEL; d = d + 1) acc_inner_q[d] <= '0;
-                        // snapshot running state for this row
-                        m_state_q <= m_in;
-                        l_state_q <= l_in;
-                        for (d = 0; d < D_MODEL; d = d + 1) acc_state_q[d] <= acc_in[d];
-                        state_q  <= S_MAC;
-                    end
+                S_IDLE: if (start) begin
+                    len_q <= tile_len; first_q <= row_first; m_tile_q <= max_comb;
+                    j_q <= '0; l_part_q <= '0;
+                    for (d = 0; d < D_MODEL; d = d + 1) acc_inner_q[d] <= '0;
+                    m_state_q <= m_in; l_state_q <= l_in;
+                    for (d = 0; d < D_MODEL; d = d + 1) acc_state_q[d] <= acc_in[d];
+                    state_q <= S_MAC;
                 end
 
                 S_MAC: begin
-                    // accumulate w_j * V_j  (inner loop-carried path = adder only)
+                    // acc_inner += w_j*V_j   (mulP = v*w_cur); loop-carried path = adder
                     l_part_q <= l_part_q + w_cur;
-                    // w_cur is an UNSIGNED Q(WEIGHT_FRAC) magnitude (0..2^WEIGHT_FRAC);
-                    // zero-extend it before the signed multiply with V.
                     for (d = 0; d < D_MODEL; d = d + 1)
-                        acc_inner_q[d] <= acc_inner_q[d] +
-                            $signed({1'b0, w_cur}) * $signed(v_tile[j_q][d]);
-                    if (j_q == len_q - 1) state_q <= S_MERGE;
+                        acc_inner_q[d] <= acc_inner_q[d] + mulP[d][ACC_W-1:0];
+                    if (j_q == len_q - 1) state_q <= (first_q ? S_FIRST : S_MOLD);
                     else                  j_q <= j_q + 1'b1;
                 end
 
-                S_MERGE: begin
-                    if (first_q) begin
-                        m_state_q <= m_tile_q;
-                        l_state_q <= l_part_q;
-                        for (d = 0; d < D_MODEL; d = d + 1) acc_state_q[d] <= acc_inner_q[d];
-                    end else begin
-                        m_state_q <= m_new_comb;
-                        l_state_q <= scale_l(l_state_q, corr_old) + scale_l(l_part_q, corr_new);
-                        for (d = 0; d < D_MODEL; d = d + 1)
-                            acc_state_q[d] <= scale_acc(acc_state_q[d], corr_old)
-                                            + scale_acc(acc_inner_q[d], corr_new);
-                    end
-                    done    <= 1'b1;
-                    state_q <= S_IDLE;
+                S_FIRST: begin                    // first tile of the row: state := tile partials
+                    m_state_q <= m_tile_q;
+                    l_state_q <= l_part_q;
+                    for (d = 0; d < D_MODEL; d = d + 1) acc_state_q[d] <= acc_inner_q[d];
+                    done <= 1'b1; state_q <= S_IDLE;
+                end
+
+                S_MOLD: begin                     // phase 1: scale OLD running state by corr_old
+                    l_state_q <= scale_l(l_state_q, corr_old);
+                    for (d = 0; d < D_MODEL; d = d + 1)
+                        acc_state_q[d] <= mulP[d] >>> WEIGHT_FRAC;     // acc_state_old * corr_old
+                    state_q <= S_MNEW;
+                end
+
+                S_MNEW: begin                     // phase 2: add this tile's partials * corr_new
+                    m_state_q <= m_new_comb;
+                    l_state_q <= l_state_q + scale_l(l_part_q, corr_new);
+                    for (d = 0; d < D_MODEL; d = d + 1)
+                        acc_state_q[d] <= acc_state_q[d] + (mulP[d] >>> WEIGHT_FRAC); // + acc_inner*corr_new
+                    done <= 1'b1; state_q <= S_IDLE;
                 end
                 default: state_q <= S_IDLE;
             endcase
