@@ -44,7 +44,7 @@ acc[d] = acc[d]*corr + acc_inner[d]   ← 乘法仅每 tile 一次（÷BK 频率
 ```
 - **cycles ↓**：点积全流水 1/拍 + 行间重叠 → ~1.8–2.5 cyc/score（baseline ~7）。
 - **5ns 更易**：旧 5ns 关键路径正是 inner 的 `acc*old_scale` 乘法；v2 把它移出内环 → 关键路径只剩加法器 + 浅流水级。
-- **面积持平**：点积 64-lane（+乘法器）但省 chunk-FSM；combine 的乘法器阵列可复用。
+- **面积 ≤ baseline**：v2 共 128 乘法器（dot 64 + combine 64 时分复用）< baseline 160（dot 32 + value_accumulator 128）。
 
 详见 `docs/v2_streaming_architecture.md`。
 
@@ -52,7 +52,7 @@ acc[d] = acc[d]*corr + acc_inner[d]   ← 乘法仅每 tile 一次（÷BK 频率
 
 ## 3. cycle 拆解与进一步空间（诚实）
 
-154,784 ≈ 计算 ~60K（已 II=1 + 重叠）+ **DMA 串行 ~74K（≈48%）** + normalize/emit ~20K。
+154,904 ≈ 计算 ~60K（已 II=1 + 重叠）+ **DMA 串行 ~74K（≈48%）** + normalize/emit ~20K。
 
 - 进一步降 cycles 的唯一大杠杆是 **DMA/计算重叠**（tile 双缓冲，预取 t+1）→ 投影 ~95–100K。
   但双缓冲要 +1 份 tile 触发器（≈+30万门），**与"面积好"冲突**。故 154K 是
