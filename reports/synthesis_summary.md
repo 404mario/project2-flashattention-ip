@@ -18,6 +18,19 @@ the RTL used by synthesis is unchanged.
 | Net area | 6315329.605 |
 | Total area | 14234140.467 |
 | Total power | 2.10594 W |
+| **Gate equivalent (NAND2)** | **≈ 1,651,404 (≈ 165.1 万)** |
+
+Gate-equivalent (handout area metric):
+
+```text
+gate_equivalent = cell_area / area(NAND2_X1) = 7918810.862 / 4.7952 ≈ 1,651,404  (≈ 165.1 万)
+limit 2,000,000 → 82.6% used  (PASS)
+```
+
+`NAND2_X1` cell area = 4.7952 um^2. Cell area (standard cells, excluding net/routing) is
+used per the 2-input-NAND equivalent convention. This is ~16k gates above the baseline
+(1,635,229), i.e. the added logic of all nine bonus features. Replace the divisor if the
+evaluation library reports a different NAND2 area.
 
 Critical path summary from `synth/reports_ispatial/30_timing.rpt`:
 

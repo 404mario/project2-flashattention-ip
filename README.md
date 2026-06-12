@@ -13,7 +13,8 @@
 - 默认参数下 = Baseline（Q8.8、S=256、d=64、单 head），结果与 Baseline 分支一致：
   full-size **233,312 cycles**，FP32 **MAE 0.000015 / MaxE 0.003906**。
 - 全部 9 个 Bonus 通过参数 / AXI-Lite 寄存器**单独开启**，互不破坏默认路径。
-- 综合 (Genus iSpatial, `bonus_6.6`, 8 ns) **clean**：slack **+1.3 ps**，TNS 0，违例 0 条。
+- 综合 (Genus iSpatial, `bonus_6.6`, 8 ns) **clean**：slack **+1.3 ps**，TNS 0，违例 0 条；
+  等效门数 **≈ 165.1 万**（占 200 万上限 82.6%）✅。
 
 证据索引：[`reports/submission_evidence.md`](reports/submission_evidence.md)、
 完整跑批记录：[`reports/full_evidence_run_2026-06-07.md`](reports/full_evidence_run_2026-06-07.md)、
@@ -64,10 +65,17 @@ Total Power         2.10594 W
 关键路径：u_flash_core/q_proc_index_q → l_update_q（data path 7778 ps，MET）
 ```
 
+**等效门数（赛题面积口径）**：
+
+```text
+等效门数 = Cell Area / area(NAND2_X1) = 7,918,810.862 / 4.7952 ≈ 1,651,404  (≈ 165.1 万)
+门限 200 万 → 占用 82.6%  ✅ 达标
+```
+
 > 老师要求 10 ns clean，本集成 Bonus 综合在 8 ns 即 clean。
 > `synth/constraints.sdc` 默认写 `CLK_PERIOD 10.000`（提交基准），归档报告为 8 ns 跑批结果。
-> **等效门数**：赛题门限为 2-input NAND 等效门数 ≤ 200 万，需用工艺库 NAND2 单元面积折算
-> Cell Area，提交报告时在 `reports/synthesis_summary.md` 补一行换算并注明所用库。
+> 折算口径：2-input NAND（`NAND2_X1`，4.7952 µm²）去除标准单元 Cell Area（不含布线）；
+> 比 Baseline（163.5 万）多约 1.6 万门，即全部 9 项 Bonus 逻辑的增量。若评测库 NAND2 面积不同，按同式替换分母。
 
 ---
 
