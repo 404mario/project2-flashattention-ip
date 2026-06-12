@@ -23,7 +23,7 @@
 |---|---:|---:|---:|---:|---|
 | baseline (`core-pipeline-fmax`, 8ns clean) | 233,312 | — | 0.000097 | 0.054688 | PASS |
 | v2 非重叠 | 193,528 | −17% | 0.000097 | 0.054688 | PASS |
-| **v2 重叠流水（本分支）** | **154,784** | **−34%** | **0.000097** | **0.054688** | **PASS** |
+| **v2 重叠流水 + 乘法器共享（本分支）** | **154,904** | **−34%** | **0.000097** | **0.054688** | **PASS** |
 
 精度与 baseline **完全一致**（复用同一 exp/recip LUT 与定点格式）。小/中规模亦 PASS：S=8→340，S=32→3064（< baseline 3528）。
 
@@ -61,12 +61,18 @@ acc[d] = acc[d]*corr + acc_inner[d]   ← 乘法仅每 tile 一次（÷BK 频率
 
 ---
 
-## 4. 面积 / 时序（待 Genus 确认）
+## 4. 面积 / 时序（本地证据 + 待 Genus 定数）
 
-本地只有 iverilog/Verilator，**无法跑 Cadence**；以下需综合同学在 Genus 上确认：
-- v2 与 baseline **共用顶层端口 + `synth/constraints.sdc` + `synth/filelist.f`**（已加 `dot_stream`/`softmax_combine`）→ 可直接综合。
-- Verilator lint：仅与 baseline 同源的良性 WIDTH 警告；新模块无 latch / comb-loop。
-- 预期：时序优于 baseline（乘法离开内环）；面积大致持平（以 `10_qor.rpt` 为准）。
+本地无 sky130 标准单元 PDK、无网络 → 精确 ns/门数只能在 Genus 出；但已用 **yosys 技术无关综合 A/B** + 结构论证给出方向（详见 `reports/v2_evidence.md`）：
+
+- **面积（乘法器是大头）**：v2 共 **128 个乘法器**（`dot_stream` 64 + `softmax_combine` 共享 64）
+  vs baseline **160 个**（dot 32 + `value_accumulator` 128）→ **v2 乘法器更少**。
+  baseline 是 163.5万门（81.8%）@8ns clean，故 v2 应**舒适落在 200万 以内**。
+  （`softmax_combine` 最初被 yosys 测出含 192 乘法器 → 已用**时分复用**降到 64，+1 cycle/tile。）
+- **时序**：baseline 的 5ns 关键路径尾 = inner 递归里的 `acc*old_scale` 乘法；v2 把它移出内环
+  （inner 只剩加法器，乘法在每-tile 合并、可多拍）→ **5ns 应比 baseline 更易收敛**。
+- v2 与 baseline **共用顶层端口 + SDC + filelist**（已加两模块）→ 可直接综合；Verilator 无 latch/comb-loop。
+- **需 Genus 定数**：WNS/TNS/违例、Cell Area→等效门数、功耗。脚本已就绪。
 
 跑法：
 ```bash
