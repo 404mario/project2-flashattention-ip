@@ -1,197 +1,105 @@
-# Project2 FlashAttention IP — Baseline 提交版本
+# Project2 FlashAttention IP — v2 流式/全流水重构（实验候选）
 
-> **本分支 (`codex-baseline-core-pipeline-fmax`) 是 Baseline 的正式提交版本。**
-> 单 batch、单 head、`S=256`、`d=64`、Q8.8 定点。功能、仿真、综合证据均已随分支提交，
-> 可独立复现，不依赖任何 bonus 分支。
+> **本分支 (`codex-baseline-v2-streaming-arch`) 是 baseline 的架构重构实验：FlashAttention-2 式流式、II=1 全流水核。**
+> 目标：同时拿下 **少 cycles + 高频 + 小面积**（sweep 已证明调参做不到，必须重构）。
+> 功能/精度已用 iverilog 全量仿真验证；**面积/时序需在 Cadence Genus 上确认**（本地无法跑）。
 >
-> Bonus（加分项）在独立分支 `codex-bonus-integrated-static-scale-fmax` 中单独实现与评测，
-> 不影响本 Baseline 的代码与结果。各分支用途见文末「版本与分支说明」。
+> 稳妥提交版仍是 8ns-clean 的 `codex-baseline-core-pipeline-fmax`（233,312 cycles）。本分支跑赢且综合证据齐全后才替换。
 
 ---
 
-## 1. 这一版是什么 / 提交结论
+## 1. 这一版是什么 / 已验证结果
 
-| 维度 | 结果 | 赛题门限 | 是否达标 |
-|---|---|---|---|
-| 功能正确性 (FP32 golden) | MAE = **0.000015**，MaxE = **0.003906** | MAE ≤ 0.03，MaxE ≤ 0.10 | ✅ |
-| 功能正确性 (RTL 定点镜像) | MAE = 0，MaxE = 0（bit 级一致） | — | ✅ |
-| 延迟 (full-size S=256, d=64, causal) | **233,312 cycles** | < 300,000 cycles | ✅ |
-| 时序 | 8 ns 时钟 **clean**：slack +1.7 ps，TNS 0，违例 0 条 | 老师要求 10 ns clean | ✅（更严，8 ns） |
-| 面积 | 等效门数 **≈ 163.5 万**（Cell Area 7,841,248.5 µm² ÷ NAND2 4.7952，占上限 81.8%） | 等效门数 ≤ 200 万 | ✅ |
-| 功耗 | 2.06683 W | — | 报告齐 |
-| 带宽 | RD_BYTES = 589,824；WR_BYTES = 32,768 | 需统计 | ✅ |
+把 baseline 的"每分数 ~7 cycle、串行多周期 FSM、且乘法压在 loop-carried 递归里"的内核，
+重构成 **FlashAttention-2 流式数据通路**：
+- `dot_stream`：全流水点积，**1 分数/拍**（II=1 前端）。
+- `softmax_combine`：tile 内求 max → 每-key MAC 累加（**inner 递归只剩加法，乘法前馈**）→ 跨-tile 合并（`acc*corr` 每 tile 一次，移出内环）。
+- 生产者/消费者 **ping-pong 流水**：第 r+1 行打分与第 r 行 combine 重叠。
+- 复用 baseline 的 DMA / normalizer / emit / BQ-block K/V 复用。
 
-证据汇总索引：[`reports/submission_evidence.md`](reports/submission_evidence.md)
+**随机向量全量仿真**（`RUN_VECTORS=1`, S=256, 供给随机 Q/K/V）对 FP32 golden：
+
+| 版本 | cycles | vs baseline | MAE | MaxE | 随机向量全量 |
+|---|---:|---:|---:|---:|---|
+| baseline (`core-pipeline-fmax`, 8ns clean) | 233,312 | — | 0.000097 | 0.054688 | PASS |
+| v2 非重叠 | 193,528 | −17% | 0.000097 | 0.054688 | PASS |
+| **v2 重叠流水（本分支）** | **154,784** | **−34%** | **0.000097** | **0.054688** | **PASS** |
+
+精度与 baseline **完全一致**（复用同一 exp/recip LUT 与定点格式）。小/中规模亦 PASS：S=8→340，S=32→3064（< baseline 3528）。
+
+证据：`reports/v2_evidence.md`（本分支），仿真自检 + `model/compare_hex.py` 对 `tb/vectors/golden_o.hex`。
 
 ---
 
-## 2. Baseline 实际配置（以 RTL 为准）
+## 2. 为什么这能三赢（设计核心）
 
-顶层 `rtl/top/flash_attn_top.sv` 的实际参数默认值：
-
-```text
-S_LEN   = 256          D_MODEL = 64           batch = 1, head = 1
-BK      = 16           BQ      = 16           # K tile=16 行, Q block=16 行
-DATA_W  = 16 (Q8.8)    FRAC_W  = 8            # Q/K/V/O 均为 16-bit signed Q8.8
-ACC_W   = 36           # dot-product / 累加器位宽（≥32 满足赛题，见 §6 注）
-SOFTMAX_FRAC = 16      # online softmax 内部 Q*.16 精度
-USE_DOT_TREE = 1, DOT_LANES = 32             # 点积用加法树缩短关键路径
-USE_CAUSAL_SKIP = 1                          # causal 下跳过 j>i 的 tile
-STATIC_SCALE_MODE = 1, STATIC_SCALE_Q8_8 = 32 # scale=1/8 静态常数移位，省运行时乘法器
+baseline 慢且 5ns 难，根因是一条带乘法的 loop-carried 递归：
 ```
-
-> 说明：早期规划稿曾写 `ACC_W=48 / BQ=1`，那是设计前的草案。**当前提交以上表为准**：
-> `ACC_W=36`、`BQ=16`。`rtl/include/flash_attn_pkg.sv` 中的 `ACC_W=48` 是包默认值，
-> 顶层例化时已显式覆盖为 36，综合/仿真实际生效的是 36。
-
-核心计算流程（FlashAttention-style，不显式存储 S×S 矩阵）：
-
-```text
-for each Q block (BQ 行):
-    load Q rows
-    每行初始化 online-softmax 状态 m, l 与累加器 acc[0:63]
-    for each K/V tile (BK 行):
-        score = Q·Kᵀ          (dot_product_engine, 加法树)
-        score = score * scale (静态移位) 后过 causal mask
-        online softmax 更新 m, l，得到 old_scale / new_weight
-        acc = acc*old_scale + new_weight*V   (value_accumulator)
-    O = acc / l               (normalizer, 倒数 LUT)
-    write O 行回外部 memory
+acc_j[d] = acc_{j-1}[d] * old_scale + w_j * V_j[d]      ← 递归里有乘法
 ```
-
-片上只保存：当前 K/V tile（≈4 KB）+ 每行 m/l/acc + 必要流水寄存器；**全程不构造 S×S 分数矩阵**。
-
----
-
-## 3. 目录结构（与实际仓库一致）
-
-```text
-rtl/
-  include/flash_attn_pkg.sv      全局参数包
-  top/flash_attn_top.sv          顶层：AXI4-Lite + AXI Master/DMA + flash_core + cycle/byte 计数
-  core/
-    flash_core.sv                计算核心主控状态机
-    tile_scheduler.sv            tile 调度（row / kv_start / kv_len）
-    dot_product_engine.sv        Q·Kᵀ 点积（加法树）
-    causal_mask_unit.sv          causal mask（j>i → NEG_LARGE）
-    online_softmax_engine.sv     online softmax（exp LUT，维护 m/l）
-    value_accumulator.sv         acc = acc*old_scale + w*V
-    normalizer.sv                O = acc / l（倒数 LUT + 插值）
-    quantize_saturate.sv         结果饱和量化回 Q8.8
-  axi/
-    axi_lite_regs.sv             控制/状态寄存器
-    axi_master_read.sv           AXI4 读通道（Q/K/V）
-    axi_master_write.sv          AXI4 写通道（O）
-    dma_controller.sv            base/stride → AXI 读写请求
-  mem/{tile_buffer.sv,row_buffer.sv}
-
-model/                           Python 参考与向量
-  model_fp32.py                  FP32 golden（验收基准）
-  model_fixed.py / model_rtl_q08.py  定点 / RTL 镜像模型
-  gen_vectors.py, gen_lut.py     测试向量 / LUT 生成
-  compare_models.py, check_top_e2e_output.py  误差检查（MAE/MaxE）
-  config.py                      规模与定点参数
-
-tb/
-  cocotb/  test_axi_lite.py, test_flash_core.py, test_end_to_end.py + common/(axi_driver, axi_ram)
-  sv/      tb_flash_attn_top_e2e_smoke.sv, tb_axi_lite_regs_ctrl.sv,
-           tb_flash_core_*_bitexact.sv（含 backpressure）, tb_dot_product_engine.sv 等
-  vectors/ input_q/k/v.hex, golden_o.hex
-
-sim/   run_top_compile.sh, run_top_e2e_smoke.sh（+ .ps1 / Makefile）
-synth/ constraints.sdc(8ns), filelist.f, genus_ispatial.tcl, run_genus.sh,
-       reports_ispatial/*.rpt（综合后 QoR/area/timing/power/check 报告）
-reports/ submission_evidence.md（证据索引）, synthesis_summary.md,
-         full-size 仿真 log/hex, waves/*.vcd（波形证据）
-docs/  architecture.md, interface_spec.md, core_integration_contract.md, 验证计划等
+v2 用 FA-2 把 max 外提到 tile 级，inner 变成：
 ```
+acc_inner[d] += w_j * V_j[d]      ← 递归只剩加法器；w_j*V_j 前馈
+acc[d] = acc[d]*corr + acc_inner[d]   ← 乘法仅每 tile 一次（÷BK 频率、可多拍）
+```
+- **cycles ↓**：点积全流水 1/拍 + 行间重叠 → ~1.8–2.5 cyc/score（baseline ~7）。
+- **5ns 更易**：旧 5ns 关键路径正是 inner 的 `acc*old_scale` 乘法；v2 把它移出内环 → 关键路径只剩加法器 + 浅流水级。
+- **面积持平**：点积 64-lane（+乘法器）但省 chunk-FSM；combine 的乘法器阵列可复用。
+
+详见 `docs/v2_streaming_architecture.md`。
 
 ---
 
-## 4. AXI4-Lite 寄存器表（与 `rtl/axi/axi_lite_regs.sv` 一致）
+## 3. cycle 拆解与进一步空间（诚实）
 
-| 地址 | 名称 | 类型 | 说明 |
-|---:|---|---|---|
-| `0x00` | CTRL | R/W | bit0 START，bit1 SOFT_RESET，bit2 IRQ_EN |
-| `0x04` | STATUS | R | bit0 BUSY，bit1 DONE（写 1 清），bit2 ERROR |
-| `0x08` | CFG | R/W | bit0 CAUSAL_EN |
-| `0x14/0x18` | Q_BASE_L/H | R/W | Q 基地址 低/高 32 |
-| `0x1C/0x20` | K_BASE_L/H | R/W | K 基地址 低/高 32 |
-| `0x24/0x28` | V_BASE_L/H | R/W | V 基地址 低/高 32 |
-| `0x2C/0x30` | O_BASE_L/H | R/W | O 基地址 低/高 32 |
-| `0x34` | STRIDE_BYTES | R/W | 行 stride，默认 `D_MODEL*2 = 128` |
-| `0x38` | NEG_LARGE | R/W | mask 用 -inf 近似（默认 -32768） |
-| `0x3C` | SCALE | R/W | 1/√d 近似（默认 32 = 0.125 Q8.8） |
-| `0x40` | CYCLES | R | 本次任务周期数 |
-| `0x44/0x48` | RD_BYTES_L/H | R | 本次 AXI 读字节数（带宽统计） |
-| `0x4C/0x50` | WR_BYTES_L/H | R | 本次 AXI 写字节数（带宽统计） |
+154,784 ≈ 计算 ~60K（已 II=1 + 重叠）+ **DMA 串行 ~74K（≈48%）** + normalize/emit ~20K。
 
-> 0x44–0x50 为带宽统计计数器，超出赛题必需寄存器之外、为评测口径而加。
-
-**性能统计口径**：`CYCLES` 在 `START` 后清零、`BUSY` 期间递增，到 core 计算完成且
-DMA 读写全部排空后 `DONE` 置位 —— 即「**从配置寄存器 START 到 DONE 全流程**」，与老师答复一致。
+- 进一步降 cycles 的唯一大杠杆是 **DMA/计算重叠**（tile 双缓冲，预取 t+1）→ 投影 ~95–100K。
+  但双缓冲要 +1 份 tile 触发器（≈+30万门），**与"面积好"冲突**。故 154K 是
+  **不牺牲面积** 的 cycle/area 甜点；要再快需接受面积上升或减小 BQ/带宽权衡。
+- DMA 实际占比依赖评测 AXI 时延模型（本 TB 为 1 beat/cycle 理想读）。
 
 ---
 
-## 5. 复现方法
+## 4. 面积 / 时序（待 Genus 确认）
 
+本地只有 iverilog/Verilator，**无法跑 Cadence**；以下需综合同学在 Genus 上确认：
+- v2 与 baseline **共用顶层端口 + `synth/constraints.sdc` + `synth/filelist.f`**（已加 `dot_stream`/`softmax_combine`）→ 可直接综合。
+- Verilator lint：仅与 baseline 同源的良性 WIDTH 警告；新模块无 latch / comb-loop。
+- 预期：时序优于 baseline（乘法离开内环）；面积大致持平（以 `10_qor.rpt` 为准）。
+
+跑法：
 ```bash
-# 仿真（iverilog/cocotb）
-./sim/run_top_compile.sh                 # 编译 smoke
-./sim/run_top_e2e_smoke.sh               # 小规模端到端 smoke
-RUN_FULL=1 ./sim/run_top_e2e_smoke.sh    # full-size S=256,d=64 端到端
-
-# 综合（Cadence Genus iSpatial）
-cd synth && ./run_genus.sh               # 读 filelist.f + constraints.sdc(8ns)，输出 reports_ispatial/
+# 仿真
+./sim/run_top_compile.sh
+RUN_VECTORS=1 ./sim/run_top_e2e_smoke.sh    # 随机向量全量（需 numpy 跑 FP32 checker）
+# 或无 numpy：用 model/compare_hex.py 对比 OUT_HEX 与 tb/vectors/golden_o.hex
+# 综合
+cd synth && ./run_genus.sh                  # 8ns；调 constraints.sdc 至 5ns 冲刺
 ```
 
 ---
 
-## 6. 证据与报告
+## 5. 新增 / 改动文件
+```
+rtl/core/dot_stream.sv         全流水 II=1 点积前端           (单元测试 tb/sv/tb_dot_stream.sv PASS)
+rtl/core/softmax_combine.sv    FA-2 combine 后端              (单元测试 tb/sv/tb_softmax_combine.sv PASS)
+rtl/core/flash_core.sv         重写为流式 + 生产者/消费者重叠流水
+model/model_fa2_fixed.py       FA-2 定点黄金模型（Stage 0 数值证明）
+model/compare_hex.py           无 numpy 的 Q8.8 hex MAE/MaxE 对比
+docs/v2_streaming_architecture.md  完整设计 + 实测
+synth/filelist.f               += dot_stream, softmax_combine
+```
+baseline 的 `dot_product_engine`/`online_softmax_engine`/`value_accumulator` 保留在树中但顶层不再例化（Genus 会 prune）。
 
-| 类别 | 文件 |
+---
+
+## 6. 分支说明
+| 分支 | 角色 |
 |---|---|
-| 证据总索引 | `reports/submission_evidence.md` |
-| full-size 仿真 log | `reports/baseline_fullsize_s256_d64.log` |
-| FP32 误差检查 log | `reports/baseline_fullsize_s256_d64_check.log` |
-| RTL 输出 dump | `reports/baseline_fullsize_s256_d64_o.hex` |
-| 波形证据 (VCD) | `reports/waves/baseline_q8_s8_d8_control_dma_softmax.vcd` |
-| 综合 QoR / 面积 / 时序 / 功耗 | `synth/reports_ispatial/{10_qor,20_area,30_timing,40_power}.rpt` |
-| 综合摘要 | `reports/synthesis_summary.md` |
+| `codex-baseline-core-pipeline-fmax` | **稳妥提交 baseline**（8ns clean, 233,312 cycles） |
+| `codex-bonus-integrated-static-scale-fmax` | 稳妥提交 bonus |
+| **`codex-baseline-v2-streaming-arch`** | 本分支：v2 重构实验，−34% cycles，随机向量全量 PASS，**待 Genus 确认 PPA** |
+| `codex-baseline-5ns-acc-pipeline-experiment` | 旧 5ns 时序实验（已被本分支思路取代） |
 
-**综合 (Genus iSpatial, `baseline_6.5`, 8 ns) 关键数据**（源：`synth/reports_ispatial/10_qor.rpt`）：
-
-```text
-Clock Period        8.000 ns        Critical Path Slack  +1.7 ps   TNS 0.0   Violating Paths 0
-Leaf Instance Count 416,835         (Sequential 94,419 / Combinational 322,416)
-Cell Area           7,841,248.502   Net Area 5,746,429.191   Total Area 13,587,677.693
-Total Power         2.06683 W
-关键路径：u_flash_core 点积加法树 → dot_reg[35]
-```
-
-**等效门数（赛题面积口径）**：
-
-```text
-等效门数 = Cell Area / area(NAND2_X1) = 7,841,248.502 / 4.7952 ≈ 1,635,229  (≈ 163.5 万)
-门限 200 万 → 占用 81.8%  ✅ 达标
-```
-
-> 折算口径：用工艺库 2-input NAND（`NAND2_X1`，单元面积 4.7952 µm²）去除标准单元面积
-> （Cell Area，不含布线 Net Area）。这是赛题「2-input NAND 等效门数 ≤ 200 万」的标准换算。
-> 若评测库 NAND2 面积不同，按同式替换分母即可。
-
----
-
-## 7. 版本与分支说明
-
-| 分支 | 角色 | 说明 |
-|---|---|---|
-| **`codex-baseline-core-pipeline-fmax`** | **Baseline 正式提交** | 本分支。8 ns clean，证据齐全 |
-| **`codex-bonus-integrated-static-scale-fmax`** | **Bonus 正式提交** | 9 项加分集成，基于本 Baseline 重建、独立评测 |
-| `main` | 历史主线 | 早期 baseline 集成，未含本分支的 fmax 收敛与证据 |
-| `codex-baseline-5ns-acc-pipeline-experiment` | 实验（未提交） | 冲刺 5 ns 的尝试，时序未收敛（WNS≈-352 ps）、面积贴线（≈199.9 万门），进行中 |
-| `codex-bonus-{multihead,dropout,padding-mask,axi-stream,...}` | bonus 开发分支 | 单项加分的开发/历史快照，已并入上面的 bonus 提交分支 |
-| `feature/core-rtl`, `codex-top-e2e-integration-fixes` | 历史 bring-up | 早期开发分支，已被 main / 提交分支取代 |
-
-> 关键约束：Baseline 与 Bonus 互不影响、各自独立综合与评测。Bonus 分支在默认参数下保留
-> 与本 Baseline 一致的 Q8.8 行为与频率目标，加分功能均可通过参数/寄存器单独开启。
+> 替换 baseline 的条件：Genus 上 **时序 ≤ baseline 且 clean、等效门数 ≤ 200万、cycles < 300k、随机向量全量 PASS** 四者同时满足。
