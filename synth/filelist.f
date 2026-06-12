@@ -3,8 +3,10 @@
 rtl/include/flash_attn_pkg.sv
 
 rtl/core/dot_product_engine.sv
+rtl/core/dot_stream.sv
 rtl/core/causal_mask_unit.sv
 rtl/core/online_softmax_engine.sv
+rtl/core/softmax_combine.sv
 rtl/core/normalizer.sv
 rtl/core/quantize_saturate.sv
 rtl/core/value_accumulator.sv
