@@ -42,8 +42,14 @@ cd synth && ./run_genus.sh
 - 8 ns and 5 ns QoR: WNS/TNS/violating paths, Cell Area → NAND2 gate-equiv (≤ 200万?), power.
 - Expected: timing ≤ baseline & easier 5 ns (multiply moved off the inner recurrence); area ~baseline.
 
-## Known further cycle levers (not applied — tradeoffs)
-- Per-row drain bubble (~15k): feed rows continuously through dot_stream with tag-routed
-  capture → ~140k. Area-free but raises control complexity.
-- DMA/compute overlap (~55k): double-buffer K/V tiles → ~100k, but +~30万门 (tile FF) → area risk.
-- 154k is the cycle/area sweet spot WITHOUT area regression.
+## Known further cycle levers (not applied — every one trades AREA)
+Analyzed; all conflict with the "area good" goal and can't be area-verified without Genus:
+- **Per-row drain bubble (~15k → ~140k):** feed rows continuously through dot_stream with a
+  tag pipeline + circular score-buffer pool. Causal early rows put up to DOT_LAT(=7) rows in
+  flight, so it needs ~N=8-16 score buffers (BK×ACC_W each) ≈ **+4万门**.
+- **DMA/compute overlap (~55k → ~100k):** double-buffer K/V tiles (prefetch t+1) ≈ **+30万门**
+  (a second 32 Kb tile FF buffer). Also benefit depends on the eval AXI latency model.
+- **Larger BQ (fewer K/V re-reads → less DMA):** BQ 16→32 cut sweep cycles 233k→196k but
+  **+~25万门** (acc_block/q_block double).
+- **=> 154k is the cycle/area sweet spot with NO area regression** (~baseline area). Picking
+  any lever above is a deliberate cycles↑↔area↑ trade to make once Genus gives the v2 area.
