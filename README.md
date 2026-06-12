@@ -17,7 +17,7 @@
 | 功能正确性 (RTL 定点镜像) | MAE = 0，MaxE = 0（bit 级一致） | — | ✅ |
 | 延迟 (full-size S=256, d=64, causal) | **233,312 cycles** | < 300,000 cycles | ✅ |
 | 时序 | 8 ns 时钟 **clean**：slack +1.7 ps，TNS 0，违例 0 条 | 老师要求 10 ns clean | ✅（更严，8 ns） |
-| 面积 | Cell Area 7,841,248.5；Total Area 13,587,677.7（详见下，等效门数换算见注） | 等效门数 ≤ 200 万 | ⚠️ 见 §6 注 |
+| 面积 | 等效门数 **≈ 163.5 万**（Cell Area 7,841,248.5 µm² ÷ NAND2 4.7952，占上限 81.8%） | 等效门数 ≤ 200 万 | ✅ |
 | 功耗 | 2.06683 W | — | 报告齐 |
 | 带宽 | RD_BYTES = 589,824；WR_BYTES = 32,768 | 需统计 | ✅ |
 
@@ -169,10 +169,16 @@ Total Power         2.06683 W
 关键路径：u_flash_core 点积加法树 → dot_reg[35]
 ```
 
-> **§6 注 — 等效门数**：赛题面积门限是「2-input NAND 等效门数 ≤ 200 万」，需用工艺库的 NAND2
-> 单元面积去折算 Cell Area（7,841,248.5）。该折算系数取决于评测工艺库，本仓库报告未直接给出
-> 等效门数列。提交报告时应在 `reports/synthesis_summary.md` 补一行：
-> `等效门数 = Cell Area / NAND2_area`，并注明所用库与单元面积。这是当前唯一待补的口径项。
+**等效门数（赛题面积口径）**：
+
+```text
+等效门数 = Cell Area / area(NAND2_X1) = 7,841,248.502 / 4.7952 ≈ 1,635,229  (≈ 163.5 万)
+门限 200 万 → 占用 81.8%  ✅ 达标
+```
+
+> 折算口径：用工艺库 2-input NAND（`NAND2_X1`，单元面积 4.7952 µm²）去除标准单元面积
+> （Cell Area，不含布线 Net Area）。这是赛题「2-input NAND 等效门数 ≤ 200 万」的标准换算。
+> 若评测库 NAND2 面积不同，按同式替换分母即可。
 
 ---
 
@@ -183,7 +189,7 @@ Total Power         2.06683 W
 | **`codex-baseline-core-pipeline-fmax`** | **Baseline 正式提交** | 本分支。8 ns clean，证据齐全 |
 | **`codex-bonus-integrated-static-scale-fmax`** | **Bonus 正式提交** | 9 项加分集成，基于本 Baseline 重建、独立评测 |
 | `main` | 历史主线 | 早期 baseline 集成，未含本分支的 fmax 收敛与证据 |
-| `codex-baseline-5ns-*-experiment` | 实验（未提交） | 冲刺 5 ns 的尝试，时序未收敛（WNS≈-352 ps），仅供参考 |
+| `codex-baseline-5ns-acc-pipeline-experiment` | 实验（未提交） | 冲刺 5 ns 的尝试，时序未收敛（WNS≈-352 ps）、面积贴线（≈199.9 万门），进行中 |
 | `codex-bonus-{multihead,dropout,padding-mask,axi-stream,...}` | bonus 开发分支 | 单项加分的开发/历史快照，已并入上面的 bonus 提交分支 |
 | `feature/core-rtl`, `codex-top-e2e-integration-fixes` | 历史 bring-up | 早期开发分支，已被 main / 提交分支取代 |
 

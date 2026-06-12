@@ -14,6 +14,18 @@ Commit: `9d1d4d8`
 | Net area | 5746429.191 |
 | Total area | 13587677.693 |
 | Total power | 2.06683 W |
+| **Gate equivalent (NAND2)** | **≈ 1,635,229 (≈ 163.5 万)** |
+
+Gate-equivalent (handout area metric):
+
+```text
+gate_equivalent = cell_area / area(NAND2_X1) = 7841248.502 / 4.7952 ≈ 1,635,229  (≈ 163.5 万)
+limit 2,000,000 → 81.8% used  (PASS)
+```
+
+`NAND2_X1` cell area = 4.7952 um^2. The cell area (standard cells, excluding net/routing)
+is used per the 2-input-NAND equivalent convention. Replace the divisor if the evaluation
+library reports a different NAND2 area.
 
 Critical path summary from `synth/reports_ispatial/30_timing.rpt`:
 
