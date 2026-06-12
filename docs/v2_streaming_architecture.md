@@ -170,6 +170,28 @@ combine 流水重叠。先做无重叠版跑通,再加重叠。
 **风险：** dot_stream 流水 fill/drain 与 score_buf 时序;causal 跳过 key 时的 valid/索引;
 ACC_W=36 在 tile 内 BK=16 累加的溢出（§5,BK=16 恰好够,若调大 BK 需加宽或 tile 内分段）。
 
+## 6c. 实测结果（已实现 + 验证，iverilog）
+
+所有 Stage 完成并验证。随机向量全量仿真（RUN_VECTORS=1, S=256, 供给的随机 Q/K/V）对 FP32 golden：
+
+| 版本 | cycles | vs baseline | MAE | MaxE | 随机向量全量 |
+|---|---:|---:|---:|---:|---|
+| baseline (`core-pipeline-fmax`) | 233,312 | — | 0.000097 | 0.054688 | PASS |
+| v2 非重叠（Stage 3 首版） | 193,528 | −17% | 0.000097 | 0.054688 | PASS |
+| **v2 重叠流水（当前）** | **154,784** | **−34%** | **0.000097** | **0.054688** | **PASS** |
+
+精度与 baseline 完全一致（同一 exp/recip LUT）。小/中规模也 PASS：S=8 → 340，S=32 → 3064（< baseline 3528）。
+
+**cycle 拆解（154,784）：** 计算 ~81K（流水后 ~1.85 cyc/score，已 II=1 + 行间重叠）+ DMA 串行 ~74K（≈48%，K/V 每 Q-block 重取）+ normalize/emit ~20K（部分重叠）。
+
+**下一杠杆（已规划，未实现）：DMA/计算重叠**（核内 2-deep tile 双缓冲，预取 tile t+1 于计算 tile t）→ 把 ~74K DMA 藏到计算后 → 预期 **~88K cycles（≈2.65× vs baseline）**。代价：+~8KB tile 缓冲触发器（≈+8万门，仍在 200万 预算内）。注：实际收益依赖评测 AXI 时延模型；本 TB 为 1 beat/cycle 理想读。
+
+**面积/时序（需 Genus 确认，本地无法跑 Cadence）：**
+- v2 与 baseline 共用顶层端口 + SDC + filelist（已加 `dot_stream`/`softmax_combine`），可直接综合。
+- Verilator lint：仅与 baseline 同源的良性 WIDTH 警告，无 latch/comb-loop（新模块干净）。
+- **时序预期更优**：旧 5ns 关键路径是 inner 递归里的 `acc*old_scale` 乘法；v2 把它移到每-tile 合并（÷BK 频率、可多拍），inner 递归只剩加法器 + 点积树全流水 → 关键路径更短，5ns 更易收敛。
+- **面积预期大致持平**：点积 64 lane（vs 32，+乘法器）但省 chunk FSM；combine 复用 inner 乘法器阵列。最终以 Genus `10_qor.rpt` 为准。
+
 ## 7. 开放问题
 - BK 是否调大（如 32）以减少 tile 数 / 合并次数？需平衡 score buffer 与 tile buffer 面积。
 - 阶段 A/B 重叠的具体流水深度（II=1 是否需要 V tile 双缓冲）。
