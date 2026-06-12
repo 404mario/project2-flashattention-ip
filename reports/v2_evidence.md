@@ -38,9 +38,37 @@ iverilog -g2012 -o /tmp/t.vvp rtl/core/dot_stream.sv tb/sv/tb_dot_stream.sv && v
 cd synth && ./run_genus.sh
 ```
 
-## Pending (needs Cadence Genus, cannot run locally)
-- 8 ns and 5 ns QoR: WNS/TNS/violating paths, Cell Area → NAND2 gate-equiv (≤ 200万?), power.
-- Expected: timing ≤ baseline & easier 5 ns (multiply moved off the inner recurrence); area ~baseline.
+## Area — local evidence (yosys generic synth, tech-independent A/B)
+No sky130 standard-cell PDK on this machine (no network), so exact NAND2-equiv needs Genus.
+But yosys (`abc -g cmos2`) gives a fair tech-independent A/B. Decisive finding + fix:
+
+- **Multiplier count is the area driver** (baseline flash_core is 77% core, dominated by mults).
+  - baseline: `dot_product_engine`(tree,32 lanes)=**32 mults** + `value_accumulator`=**128 mults** = **160**.
+  - v2 (after fix): `dot_stream`(64 lanes)=**64** + `softmax_combine`(shared array)=**64** = **128 mults**.
+  - => v2 has **FEWER multipliers than baseline** (128 vs 160).
+- The fix: yosys first showed `softmax_combine` instantiated 64 MAC + 128 merge mults (~192) because
+  MAC and the two merge terms were separate parallel expressions. Time-sharing one 64-wide array
+  across S_MAC/S_MOLD/S_MNEW (they run in different cycles) dropped it to 64 mults, +1 cycle/tile
+  (full-size 154784 → 154904), accuracy unchanged.
+- yosys generic cells (cmos2, reference only): baseline `value_accumulator` alone = 830,259;
+  baseline `dpe`(tree-32) = 174,116; `dot_stream` = 281,244. (cmos2 != sky130; use for direction.)
+- => **Area expectation: v2 ≤ baseline** (fewer mults; pipeline regs add some FF but baseline’s
+  128-mult value_accumulator dominated). Baseline is 163.5万 gates (81.8% of 200万) at 8ns clean,
+  so v2 should sit comfortably under the cap. Confirm exact NAND2-equiv in Genus.
+
+## Timing — structural argument (the 5ns tail is removed)
+- The baseline 5ns critical-path tail was the inner recurrence `acc = acc*old_scale + w*V`
+  (a MULTIPLY inside the registered feedback). v2 makes the loop-carried inner path a **pure adder**
+  (`acc_inner += w*V`, with `w*V` feed-forward); the only `acc*corr` multiply moved to the per-tile
+  merge (S_MOLD/S_MNEW), off the 1/cycle inner path and allowed multiple cycles.
+- `dot_stream` is a registered adder tree (1 level/cycle) → each stage is one short adder.
+- => timing expectation: **easier 5ns closure than baseline** (the exact path that limited it is gone).
+  Confirm WNS/TNS in Genus.
+
+## Pending (needs Cadence Genus — environment limit, not a design gap)
+- 8 ns and 5 ns QoR: WNS/TNS/violating paths, Cell Area → NAND2 gate-equiv (≤ 200万), power.
+- Local environment has no std-cell PDK and no network, so ns/gate numbers can only come from Genus.
+  Scripts ready: `synth/run_genus.sh` + `synth/filelist.f` (incl. dot_stream/softmax_combine) + SDC.
 
 ## Known further cycle levers (not applied — every one trades AREA)
 Analyzed; all conflict with the "area good" goal and can't be area-verified without Genus:
