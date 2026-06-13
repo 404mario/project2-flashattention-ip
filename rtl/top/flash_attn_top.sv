@@ -15,7 +15,8 @@ module flash_attn_top #(
     parameter int USE_CAUSAL_SKIP = 1,
     parameter int SOFTMAX_FRAC    = 16,
     parameter int STATIC_SCALE_MODE = 1,
-    parameter int STATIC_SCALE_Q8_8 = 32
+    parameter int STATIC_SCALE_Q8_8 = 32,
+    parameter int USE_KV_PREFETCH = 0
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -319,7 +320,8 @@ module flash_attn_top #(
         .DATA_W(DATA_W),
         .D_MODEL(D_MODEL),
         .BK(BK),
-        .AXI_DATA_W(AXI_DATA_W)
+        .AXI_DATA_W(AXI_DATA_W),
+        .USE_KV_PREFETCH(USE_KV_PREFETCH)
     ) u_dma_controller (
         .clk(clk),
         .rst_n(work_rst_n),
