@@ -19,6 +19,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int STATIC_SCALE_MODE = 1;
     parameter int STATIC_SCALE_Q8_8 = SCALE_Q8_8;
     parameter int USE_KV_PREFETCH = 1;  // default ON for this branch
+    parameter int RD_STALL        = 0;  // >0 injects AXI read wait-states (backpressure test)
     parameter int MAX_CYCLES      = 0;
     parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
@@ -149,6 +150,8 @@ module tb_flash_attn_top_e2e_smoke;
     } wr_state_t;
 
     rd_state_t rd_state_q;
+    int rd_stall_cnt_q = 0;
+    wire rd_stall = (RD_STALL != 0) && ((rd_stall_cnt_q % 3) == 0);
     wr_state_t wr_state_q;
     int unsigned rd_addr_q;
     int rd_len_q;
@@ -503,8 +506,8 @@ module tb_flash_attn_top_e2e_smoke;
     endtask
 
     always_comb begin
-        m_axi_arready = (rd_state_q == RD_IDLE);
-        m_axi_rvalid  = (rd_state_q == RD_SEND);
+        m_axi_arready = (rd_state_q == RD_IDLE) && !rd_stall;
+        m_axi_rvalid  = (rd_state_q == RD_SEND) && !rd_stall;
         m_axi_rdata   = read_axi_word(rd_addr_q + rd_beat_q * AXI_BYTES);
         m_axi_rresp   = 2'b00;
         m_axi_rlast   = (rd_state_q == RD_SEND) && (rd_beat_q == rd_len_q - 1);
@@ -516,7 +519,9 @@ module tb_flash_attn_top_e2e_smoke;
             rd_addr_q     <= 0;
             rd_len_q      <= 0;
             rd_beat_q     <= 0;
+            rd_stall_cnt_q <= 0;
         end else begin
+            rd_stall_cnt_q <= rd_stall_cnt_q + 1;
             case (rd_state_q)
                 RD_IDLE: begin
                     if (m_axi_arvalid && m_axi_arready) begin
