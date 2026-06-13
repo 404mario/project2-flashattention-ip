@@ -16,7 +16,7 @@ module flash_attn_top #(
     parameter int SOFTMAX_FRAC    = 16,
     parameter int STATIC_SCALE_MODE = 1,
     parameter int STATIC_SCALE_Q8_8 = 32,
-    parameter int USE_KV_PREFETCH = 0
+    parameter int USE_KV_PREFETCH = 1
 ) (
     input  logic clk,
     input  logic rst_n,

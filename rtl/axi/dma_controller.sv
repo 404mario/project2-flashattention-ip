@@ -12,7 +12,7 @@ module dma_controller #(
     // 1 = while the core computes the current tile, prefetch tile (kv_start+BK)
     //     into a shadow buffer; serve it instantly on the next request (hit),
     //     hiding DMA latency behind compute. Transparent to flash_core.
-    parameter int USE_KV_PREFETCH = 0
+    parameter int USE_KV_PREFETCH = 1
 ) (
     input  logic clk,
     input  logic rst_n,

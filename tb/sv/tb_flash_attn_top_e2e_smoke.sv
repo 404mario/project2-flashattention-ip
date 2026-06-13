@@ -18,7 +18,7 @@ module tb_flash_attn_top_e2e_smoke;
     parameter int SOFTMAX_FRAC    = 16;
     parameter int STATIC_SCALE_MODE = 1;
     parameter int STATIC_SCALE_Q8_8 = SCALE_Q8_8;
-    parameter int USE_KV_PREFETCH = 0;
+    parameter int USE_KV_PREFETCH = 1;  // default ON for this branch
     parameter int MAX_CYCLES      = 0;
     parameter int PROGRESS_EVERY  = 0;
     parameter int VERBOSE        = 0;
