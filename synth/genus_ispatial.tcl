@@ -6,8 +6,15 @@ set DESIGN flash_attn_top
 
 set SCRIPT_DIR [file dirname [file normalize [info script]]]
 set ROOT_DIR   [file normalize [file join $SCRIPT_DIR ".."]]
-set RPT_DIR    [file join $SCRIPT_DIR reports_ispatial]
-set OUT_DIR    [file join $SCRIPT_DIR out_ispatial]
+# Tag report/output dirs by clock period so a period sweep (8/6/5 ns) keeps each
+# run's evidence separate instead of overwriting.
+if {[info exists ::env(CLK_PERIOD_NS)]} {
+    set PTAG [format "%sns" $::env(CLK_PERIOD_NS)]
+} else {
+    set PTAG "8.000ns"
+}
+set RPT_DIR    [file join $SCRIPT_DIR "reports_ispatial_${PTAG}"]
+set OUT_DIR    [file join $SCRIPT_DIR "out_ispatial_${PTAG}"]
 
 file mkdir $RPT_DIR
 file mkdir $OUT_DIR
@@ -99,27 +106,37 @@ check_design > [file join $RPT_DIR 00_check_design_pre_synth.rpt]
 read_sdc $SDC_FILE
 check_timing > [file join $RPT_DIR 01_check_timing_pre_synth.rpt]
 
+# Multi-threading: let Genus use multiple cores for generic/map/opt + physical.
+# Single-thread was a big part of the slow runtime. Adjust to the server's core
+# count (8 is safe on the EDA box); harmless if fewer cores are present.
+# Wrapped in catch so an attribute-name mismatch across Genus versions warns
+# instead of aborting a long run.
+if {[catch {set_db max_cpus_per_server 8} m]} { puts "WARN: max_cpus_per_server: $m" }
+if {[catch {set_db auto_super_thread   true} m]} { puts "WARN: auto_super_thread: $m" }
+
 # Effort settings.
 set_db syn_generic_effort medium
 set_db syn_map_effort     medium
 set_db syn_opt_effort     medium
 
+# Register retiming: allow Genus to rebalance the pipeline registers across the
+# dot_stream adder tree / combine datapath to hit a shorter period. Preserves
+# cycle-by-cycle I/O behavior (latency & cycle count unchanged), only moves
+# flops -> this is the main fmax lever for the 5 ns sweep. Safe to leave on at
+# 8 ns too (it just won't move much when timing is already met).
+if {[catch {set_db retime true} m]} { puts "WARN: retime: $m" }
+if {[catch {set_db retime_effort_level high} m]} { puts "WARN: retime_effort_level: $m" }
+
 # ============================================================
 # Synthesis flow (iSpatial)
 # ============================================================
 
-# FIX for TUI-234 (CDN_PAS_SKIP_MUX hierarchy conflict):
-# Forcefully flatten the dma_controller instance IMMEDIATELY after elaborate.
-# Setting the module attribute wasn't enough, we must execute the ungroup command
-# so the sub-design boundary is destroyed before syn_generic starts.
-puts "INFO: Flattening dma_controller to avoid TUI-234 bug..."
-foreach_in_collection h [get_db hinsts *u_dma_controller*] {
-    set inst_name [get_db $h .name]
-    set_db $h .ungroup_ok true
-    set_db $h .module.ungroup_ok true
-    catch { ungroup -simple $h }
-    puts "INFO: Ungrouped instance $inst_name"
-}
+# TUI-234 (CDN_PAS_SKIP_MUX) is now fixed at the RTL level: dma_controller no
+# longer does dynamic-row-index array writes (k_buf[idx][..]) -- they were
+# rewritten as static per-row decoded writes. The forced flatten/ungroup that
+# the old flow needed (and which collapsed the whole design into one ~340k-cell
+# region -> ~30h runtime) is therefore REMOVED. Hierarchy is preserved so Genus
+# optimizes per-module and runs far faster. (See dma_controller.sv "dec_row".)
 
 syn_generic
 predict_floorplan

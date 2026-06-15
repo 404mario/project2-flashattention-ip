@@ -1,25 +1,39 @@
 # constraints.sdc
 # Target: flash_attn_top, sky130_fd_sc_hs TT 25C 1.80V
-# Default clock target: 125 MHz = 8 ns
-# 1. 基础时钟
-set CLK_PERIOD 8.000
+#
+# Clock period is parameterized: override with env CLK_PERIOD_NS to sweep
+# 8 / 6 / 5 ns from the SAME flow without editing this file, e.g.
+#     CLK_PERIOD_NS=5.0 genus -f synth/genus_ispatial.tcl
+# Default 8.000 ns (= the proven baseline target).
+if {[info exists ::env(CLK_PERIOD_NS)]} {
+    set CLK_PERIOD $::env(CLK_PERIOD_NS)
+} else {
+    set CLK_PERIOD 8.000
+}
+puts "INFO: SDC clock period = $CLK_PERIOD ns"
+
 create_clock -name clk -period $CLK_PERIOD [get_ports clk]
 
-# 0.1ns 余量
-set_clock_uncertainty 0.1 [get_clocks clk]
+# Uncertainty/transition scale gently with period (keep ~1-2% margin).
+set_clock_uncertainty [expr {$CLK_PERIOD * 0.0125}] [get_clocks clk]
 set_clock_transition  0.1 [get_clocks clk]
 
-# 2. 端口分类
+# Port classification.
 set INPUT_PORTS  [remove_from_collection [all_inputs]  [get_ports {clk rst_n}]]
 set OUTPUT_PORTS [all_outputs]
 
-# 3. 复位网络处理
+# Reset is an ideal network.
 set_ideal_network [get_ports rst_n]
 
-# 4. IO 延迟
-set_input_delay  2.5 -clock [get_clocks clk] $INPUT_PORTS
-set_output_delay 2.5 -clock [get_clocks clk] $OUTPUT_PORTS
+# IO delays scale with the period (30% in / 30% out). The original fixed 2.5 ns
+# was half of a 5 ns clock and would make any IO path dominate the 5 ns sweep,
+# masking the real internal fmax (dot tree / combine). 30%/period keeps IO
+# realistic for an SoC-integrated IP while letting internal fmax be the limiter.
+set IO_IN  [expr {$CLK_PERIOD * 0.30}]
+set IO_OUT [expr {$CLK_PERIOD * 0.30}]
+set_input_delay  $IO_IN  -clock [get_clocks clk] $INPUT_PORTS
+set_output_delay $IO_OUT -clock [get_clocks clk] $OUTPUT_PORTS
 
-# 5. 基础物理约束
+# Basic physical constraints.
 set_input_transition 0.2 $INPUT_PORTS
 set_load 0.05 $OUTPUT_PORTS

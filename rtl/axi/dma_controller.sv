@@ -127,6 +127,7 @@ module dma_controller #(
     logic [ROW_W:0]        pf_next_start;       // candidate next-tile start = kv_start+BK
     assign pf_next_start = {1'b0, kv_start_q} + BK;
     integer pf_row, pf_col;
+    integer dec_row;   // static row decode index (replaces dynamic k_buf[idx] write -> avoids CDN_PAS_SKIP_MUX / TUI-234)
 
     integer seq_col;
     integer seq_row;
@@ -327,11 +328,14 @@ module dma_controller #(
 
                     S_K_RD_RECV: begin
                         if (rd_data_valid && rd_data_ready) begin
-                            for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                seq_col = beat_idx_q;
-                                seq_col = (seq_col * WORDS_PER_BEAT) + seq_word;
-                                if (seq_col < D_MODEL) begin
-                                    k_buf[tile_row_idx_q][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                            for (dec_row = 0; dec_row < BK; dec_row = dec_row + 1) begin
+                                if (dec_row == tile_row_idx_q) begin
+                                    for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
+                                        seq_col = (beat_idx_q * WORDS_PER_BEAT) + seq_word;
+                                        if (seq_col < D_MODEL) begin
+                                            k_buf[dec_row][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                                        end
+                                    end
                                 end
                             end
 
@@ -360,11 +364,14 @@ module dma_controller #(
 
                     S_V_RD_RECV: begin
                         if (rd_data_valid && rd_data_ready) begin
-                            for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                seq_col = beat_idx_q;
-                                seq_col = (seq_col * WORDS_PER_BEAT) + seq_word;
-                                if (seq_col < D_MODEL) begin
-                                    v_buf[tile_row_idx_q][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                            for (dec_row = 0; dec_row < BK; dec_row = dec_row + 1) begin
+                                if (dec_row == tile_row_idx_q) begin
+                                    for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
+                                        seq_col = (beat_idx_q * WORDS_PER_BEAT) + seq_word;
+                                        if (seq_col < D_MODEL) begin
+                                            v_buf[dec_row][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                                        end
+                                    end
                                 end
                             end
 
@@ -412,11 +419,14 @@ module dma_controller #(
                     S_PF_K_RECV: begin
                         if (kv_data_ready) kv_consume_pending_q <= 1'b1;
                         if (rd_data_valid && rd_data_ready) begin
-                            for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                seq_col = beat_idx_q;
-                                seq_col = (seq_col * WORDS_PER_BEAT) + seq_word;
-                                if (seq_col < D_MODEL)
-                                    k_buf2[tile_row_idx_q][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                            for (dec_row = 0; dec_row < BK; dec_row = dec_row + 1) begin
+                                if (dec_row == tile_row_idx_q) begin
+                                    for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
+                                        seq_col = (beat_idx_q * WORDS_PER_BEAT) + seq_word;
+                                        if (seq_col < D_MODEL)
+                                            k_buf2[dec_row][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                                    end
+                                end
                             end
                             if (rd_last || (beat_idx_q == ROW_BEATS - 1)) begin
                                 if ((tile_row_idx_q + 1'b1) < pf_len_q) begin
@@ -436,11 +446,14 @@ module dma_controller #(
                     S_PF_V_RECV: begin
                         if (kv_data_ready) kv_consume_pending_q <= 1'b1;
                         if (rd_data_valid && rd_data_ready) begin
-                            for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                seq_col = beat_idx_q;
-                                seq_col = (seq_col * WORDS_PER_BEAT) + seq_word;
-                                if (seq_col < D_MODEL)
-                                    v_buf2[tile_row_idx_q][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                            for (dec_row = 0; dec_row < BK; dec_row = dec_row + 1) begin
+                                if (dec_row == tile_row_idx_q) begin
+                                    for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
+                                        seq_col = (beat_idx_q * WORDS_PER_BEAT) + seq_word;
+                                        if (seq_col < D_MODEL)
+                                            v_buf2[dec_row][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
+                                    end
+                                end
                             end
                             if (rd_last || (beat_idx_q == ROW_BEATS - 1)) begin
                                 if ((tile_row_idx_q + 1'b1) < pf_len_q) begin
