@@ -52,29 +52,8 @@ Primary logs:
 
 ## Synthesis Evidence
 
-The `baseline_6.5` Genus iSpatial run uses an 8 ns clock. It is timing clean.
+> ⏳ **待综合（PENDING）**：本分支 v2 流式核尚未在 Genus 上真正综合。原先此处的综合数据是从 baseline 核报告复制的、与本分支 RTL 不符，已删除。面积/时序/主频/功耗以将来真实 `reports_ispatial/` 为准；功能/cycles 见 `reports/v2_evidence.md`。
 
-| Metric | Result |
-|---|---:|
-| Clock period | 8 ns |
-| Critical path slack | +1.7 ps |
-| TNS | 0.0 |
-| Violating paths | 0 |
-| Cell area | 7841248.502 |
-| Net area | 5746429.191 |
-| Total area | 13587677.693 |
-| Total power | 2.06683 W |
-
-Primary reports:
-
-| File | Purpose |
-|---|---|
-| `synth/reports_ispatial/10_qor.rpt` | Clock period, slack, TNS, violating paths, area summary |
-| `synth/reports_ispatial/20_area.rpt` | Hierarchical area report |
-| `synth/reports_ispatial/30_timing.rpt` | Critical path timing report |
-| `synth/reports_ispatial/40_power.rpt` | Power report |
-| `synth/reports_ispatial/50_check_design_post_synth.rpt` | Post-synthesis design checks |
-| `synth/reports_ispatial/60_check_timing_post_synth.rpt` | Post-synthesis timing lint checks |
 
 ## Reproduction
 
