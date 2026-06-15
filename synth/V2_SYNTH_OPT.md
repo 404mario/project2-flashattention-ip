@@ -35,13 +35,14 @@
   （原固定 2.5ns 在 5ns 下会让 IO 路径假性主导，掩盖真实内部 fmax）。
 - 报告目录按周期自动分目录 `reports_ispatial_<P>ns/`，扫频互不覆盖。
 
-## 怎么跑
+## 怎么跑（默认就是 5ns clean）
 ```bash
 cd synth
-./run_genus.sh                       # 默认 8ns，验证真实 PPA（v2 核第一次真正综合）
-./run_sweep.sh 8 6 5                  # 一键扫 8/6/5ns，末尾打印各点 slack/违例/面积
-# 或单点：CLK_PERIOD_NS=5.0 genus -f synth/genus_ispatial.tcl
+./run_genus.sh                       # 默认 5.000ns、high effort、retiming on（直接冲 5ns clean）
+# 结果在 synth/reports_ispatial_5.000ns/  ->  看 10_qor.rpt 的 Violating Paths / Slack
 ```
+说明：SDC 默认周期已锁 5.000ns，`syn_*_effort=high`，retiming 开。无需再扫频。
+（若临时想看别的点：`CLK_PERIOD_NS=8.0 genus -f synth/genus_ispatial.tcl`；`run_sweep.sh` 仍保留备用。）
 
 ## 为什么 v2 比老核更可能 5ns clean（结构论证）
 - 老核 5ns 关键路径尾 = inner 递归里的 `acc*old_scale` **乘法**（loop-carried，无法 retime 掉）。

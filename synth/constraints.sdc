@@ -1,14 +1,13 @@
 # constraints.sdc
 # Target: flash_attn_top, sky130_fd_sc_hs TT 25C 1.80V
 #
-# Clock period is parameterized: override with env CLK_PERIOD_NS to sweep
-# 8 / 6 / 5 ns from the SAME flow without editing this file, e.g.
-#     CLK_PERIOD_NS=5.0 genus -f synth/genus_ispatial.tcl
-# Default 8.000 ns (= the proven baseline target).
+# Clock period is parameterized. DEFAULT TARGET = 5.000 ns (the goal: 5 ns clean).
+# A bare `./run_genus.sh` therefore synthesizes at 5 ns directly.
+# Override only if you ever want another point, e.g. CLK_PERIOD_NS=8.0 ...
 if {[info exists ::env(CLK_PERIOD_NS)]} {
     set CLK_PERIOD $::env(CLK_PERIOD_NS)
 } else {
-    set CLK_PERIOD 8.000
+    set CLK_PERIOD 5.000
 }
 puts "INFO: SDC clock period = $CLK_PERIOD ns"
 

@@ -11,7 +11,7 @@ set ROOT_DIR   [file normalize [file join $SCRIPT_DIR ".."]]
 if {[info exists ::env(CLK_PERIOD_NS)]} {
     set PTAG [format "%sns" $::env(CLK_PERIOD_NS)]
 } else {
-    set PTAG "8.000ns"
+    set PTAG "5.000ns"
 }
 set RPT_DIR    [file join $SCRIPT_DIR "reports_ispatial_${PTAG}"]
 set OUT_DIR    [file join $SCRIPT_DIR "out_ispatial_${PTAG}"]
@@ -114,10 +114,11 @@ check_timing > [file join $RPT_DIR 01_check_timing_pre_synth.rpt]
 if {[catch {set_db max_cpus_per_server 8} m]} { puts "WARN: max_cpus_per_server: $m" }
 if {[catch {set_db auto_super_thread   true} m]} { puts "WARN: auto_super_thread: $m" }
 
-# Effort settings.
-set_db syn_generic_effort medium
-set_db syn_map_effort     medium
-set_db syn_opt_effort     medium
+# Effort settings. HIGH effort: we are doing one focused 5 ns-clean push (not a
+# sweep), so spend the extra optimization time to maximize the chance of closing.
+set_db syn_generic_effort high
+set_db syn_map_effort     high
+set_db syn_opt_effort     high
 
 # Register retiming: allow Genus to rebalance the pipeline registers across the
 # dot_stream adder tree / combine datapath to hit a shorter period. Preserves
