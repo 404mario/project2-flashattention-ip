@@ -1,19 +1,27 @@
 #!/bin/tcsh
-
-# Run from project root: /home/junchi/bonus_5.27
-# This server uses csh/tcsh-style module commands.
+#============================================================================
+# run_genus.sh - one-command Genus iSpatial synthesis (correct physical flow).
+# Equivalent to the manual steps:  module load ddi/251/25.12.000
+#                                   genus -f synth/genus_ispatial.tcl
+# Auto-locates the package root, so it works from anywhere.
+#============================================================================
+set SCRIPT_PATH = `readlink -f $0`
+set SYNTH_DIR   = `dirname $SCRIPT_PATH`
+cd $SYNTH_DIR/..
+echo "Project root: `pwd`"
 
 module load ddi/251/25.12.000
 
 mkdir -p synth/logs
-mkdir -p synth/reports
-mkdir -p synth/out
 
 echo "Using Genus:"
 which genus
 genus -version
 
-echo "Start Genus synthesis..."
-genus -f synth/genus.tcl |& tee synth/logs/genus.log
+# IMPORTANT: use the iSpatial (physical) flow -> real PPA + the TUI-234 ungroup
+# fix live in genus_ispatial.tcl. genus.tcl is the older logical-only flow and
+# is NOT what we submit/measure with.
+echo "Start Genus iSpatial synthesis (5ns default; CLK_PERIOD_NS to override)..."
+genus -f synth/genus_ispatial.tcl |& tee synth/logs/genus.log
 
-echo "Done. Check reports under synth/reports/"
+echo "Done. Reports: synth/reports_ispatial_<period>ns/  (see 10_qor.rpt)"
