@@ -8,6 +8,7 @@
 
 ## Table of Contents
 
+- [0. 关键文档（评分口径 / 综合排错）](#0-关键文档评分口径--综合排错)
 - [1. Project Overview](#1-project-overview)
 - [2. Baseline Configuration](#2-baseline-configuration)
 - [3. Directory Structure and File Responsibilities](#3-directory-structure-and-file-responsibilities)
@@ -19,6 +20,17 @@
 - [9. Interface Change Rule](#9-interface-change-rule)
 - [10. Minimum Integration Contract](#10-minimum-integration-contract)
 - [11. Final Submission Checklist](#11-final-submission-checklist)
+
+---
+
+## 0. 关键文档（评分口径 / 综合排错）
+
+- 📋 **[Project 2 官方要求](docs/project2_requirements.md)** — 摘自课程《Project 2 补充说明》
+  PDF（FlashAttention 赛题），基本要求 75% + 附加要求 25% 的权威评分口径、必需寄存器表、
+  正确性验收阈值（MAE≤0.03 / MaxE≤0.10）、ASIC 后端指标（面积 ≤200 万门、延迟 <300k cycles）。
+- 🛠 **[Genus 综合中断（TUI-234）排错](docs/genus_synthesis_troubleshooting.md)** — `syn_generic
+  -physical` 第二遍 generic 因 advstr 跨层级 group flash_core 的 `CDN_PAS_SKIP_MUX_0i` 而中断，
+  根因分析与已落地修复（修复在 `codex-baseline-v2-dma-prefetch-synthopt` 分支）。
 
 ---
 
