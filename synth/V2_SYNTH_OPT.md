@@ -13,18 +13,25 @@
 
 ## 改了什么 & 为什么
 
-### 1) RTL：消除 TUI-234 根因（`rtl/axi/dma_controller.sv`）
-- 旧写法 `k_buf[tile_row_idx_q][col] <= ...`（动态行下标写 2D 数组）会让 Genus 生成
-  `CDN_PAS_SKIP_MUX`；旧 tcl 为此被迫 `ungroup -simple u_dma_controller` **强制砸平**，
-  导致整设计塌成一个 ~34 万单元的扁平 region 一起优化 → **~30h**。
-- 改为**静态逐行译码写**：`for dec_row in 0..BK-1: if (dec_row==tile_row_idx_q) k_buf[dec_row][col]<=...`。
-  语义完全相同（仍只写被选中行），但行下标变成常数 → Genus 推断为带使能的普通触发器，
-  **不再产生 skip-mux**。4 处（k_buf/v_buf/k_buf2/v_buf2）全部改。
+### 1) RTL：减少 dma 的动态下标写（`rtl/axi/dma_controller.sv`）
+- 旧写法 `k_buf[tile_row_idx_q][col] <= ...`（动态**行**下标写 2D 数组）会让 Genus 生成
+  `CDN_PAS_SKIP_MUX`。已改为**静态逐行译码写**：`for dec_row: if(dec_row==tile_row_idx_q) ...`，
+  4 处（k_buf/v_buf/k_buf2/v_buf2）的**行**下标变常数。
+- 注意：dma 仍有 beat 索引的**列/一维**动态访问（q_buf 收行、o_buf 写出），Genus 仍会为它们生成
+  少量 skip-mux —— 因此仅靠 RTL 改写**不足以**完全消除 dma 内的 skip-mux（见 §2 实测教训）。
 
-### 2) 综合 tcl：去砸平 + 多线程 + 保留层级（`synth/genus_ispatial.tcl`）
-- **删除** `ungroup -simple u_dma_controller`（30h 的直接元凶）。TUI-234 是 `[group]` 阶段
-  报的错——不调用 ungroup，错误根本不出现；现在层级保留，Genus 按模块分块优化，**大幅提速**。
-- **多线程**：`set_db max_cpus_per_server 8` + `auto_super_thread true`（原来单线程）。
+### 2) 综合 tcl：**定向 ungroup u_dma_controller** + 多线程 + retiming（`synth/genus_ispatial.tcl`）
+> **实测教训（genus.log1，2026-06-16）**：把 ungroup 完全删掉后，`syn_generic -physical` 里
+> Genus 自带的 **advanced-structuring** 步骤会对组合 fan-in 锥做内部 `group`，当它跨越
+> dma↔core 边界去 group dma 的 `CDN_PAS_SKIP_MUX` 时报 **TUI-234** 退出。日志显示
+> `u_flash_core/u_combine` 的 skip-mux group 正常（ratio=1.0），**只有 dma 跨边界那个失败**。
+- 因此**恢复定向 ungroup**：只 `ungroup u_dma_controller`（把这一个小块的边界溶进顶层），
+  advstr 就没有 dma 边界可跨 → 不再 TUI-234。**这正是真·8ns baseline 当年用的做法**
+  （它干净跑完、Elapsed ≈ 7.8h）。
+- **关键澄清（纠正本文旧说法）**：这只溶解 **dma 一个小块**，**不是**把整设计砸平；
+  `flash_core` 等全部保留层级。所谓"30h 来自 ungroup"是早先的误判 —— 真 baseline 带这条
+  ungroup 也只 7.8h，慢是别的原因（物理流 + 单线程 + 高 effort），已用多线程缓解。
+- **多线程**：`set_db max_cpus_per_server 8` + `auto_super_thread true`（原单线程）。
 - 都用 `catch` 包裹，跨 Genus 版本属性名不一致时只告警、不中断长跑。
 
 ### 3) 时序：寄存器 retiming + 可扫频 SDC（`constraints.sdc` + tcl）

@@ -132,12 +132,24 @@ if {[catch {set_db retime_effort_level high} m]} { puts "WARN: retime_effort_lev
 # Synthesis flow (iSpatial)
 # ============================================================
 
-# TUI-234 (CDN_PAS_SKIP_MUX) is now fixed at the RTL level: dma_controller no
-# longer does dynamic-row-index array writes (k_buf[idx][..]) -- they were
-# rewritten as static per-row decoded writes. The forced flatten/ungroup that
-# the old flow needed (and which collapsed the whole design into one ~340k-cell
-# region -> ~30h runtime) is therefore REMOVED. Hierarchy is preserved so Genus
-# optimizes per-module and runs far faster. (See dma_controller.sv "dec_row".)
+# --- TUI-234 fix: dissolve ONLY the dma_controller boundary --------------------
+# The iSpatial "advanced structuring" pass inside `syn_generic -physical` runs an
+# internal `group` over combinational fan-in cones. dma_controller still contains
+# dynamic-index array accesses (beat-indexed q/k/v/o buffers) that Genus realizes
+# as CDN_PAS_SKIP_MUX; when those straddle the dma<->core hierarchy boundary the
+# advstr `group` fails with TUI-234 (observed in genus.log1: u_flash_core/u_combine
+# skip-muxes group fine; only u_dma_controller's cross-boundary one fails).
+# Fix = ungroup ONLY u_dma_controller (merge its logic into the top) so there is
+# no dma boundary for advstr to straddle. This is exactly what the genuine 8ns
+# baseline run used (it synthesized clean in ~7.8h) -- it dissolves ONE small
+# block, NOT the whole design, so it does NOT recreate the monolithic-flatten
+# slowdown. flash_core and all other modules keep their hierarchy.
+puts "INFO: ungrouping u_dma_controller (dissolve its boundary to avoid advstr TUI-234)..."
+foreach_in_collection h [get_db hinsts *u_dma_controller*] {
+    set_db $h .ungroup_ok true
+    set_db $h .module.ungroup_ok true
+    catch { ungroup -simple $h }
+}
 
 syn_generic
 predict_floorplan
