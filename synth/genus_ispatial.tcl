@@ -153,6 +153,40 @@ foreach_in_collection h [get_db hinsts *u_dma_controller*] {
 
 syn_generic
 predict_floorplan
+
+# --- TUI-234 fix #2: the REAL crash cause (genus (1).log1, 2026-06-16) ----------
+# The dma-only ungroup above is necessary but NOT sufficient. The run still died
+# with [TUI-234] [group] -> [SYNTH-3] during the SECOND generic pass
+# (`syn_generic -physical`), and NOT on dma at all -- on flash_core's causal-skip
+# mux:
+#   hinst flash_attn_top/u_flash_core/CDN_PAS_SKIP_MUX_0i  (kept by advstr in
+#   pass 1) vs the offending nested cell
+#   .../CDN_PAS_SKIP_MUX_0i/CDN_PAS_SKIP_MUX_0i/g100416     (created in pass 2).
+#
+# Mechanism: the advanced-structuring (CAS) pass runs ONCE per generic call.
+#   pass 1 `syn_generic`           -> "Identified hierarchy for CAS:
+#                                      .../CDN_PAS_SKIP_MUX_0i" and PRESERVES it
+#                                      (advstr_keep_structure=1, advstr_cas=1).
+#   pass 2 `syn_generic -physical` -> advstr re-analyzes the SAME cone, creates a
+#                                      same-named CDN_PAS_SKIP_MUX_0i NESTED inside
+#                                      the preserved one, then `group [all_fanin]`
+#                                      straddles that nested boundary -> TUI-234.
+# The dma ungroup can't help because USE_CAUSAL_SKIP=1 puts these skip muxes
+# INSIDE u_flash_core (which we deliberately keep hierarchical).
+#
+# Fix: between the two generic passes, dissolve every advstr-created
+# CDN_PAS_*_MUX group so the physical advstr pass starts from a FLAT fan-in cone
+# (no preserved same-named hierarchy to nest into / straddle). Genus already
+# ungroups most of these at ratio=1.0 on its own, so dissolving the survivors is
+# behaviorally neutral -- it only removes the tool-made mux wrapper, not any RTL.
+puts "INFO: dissolving advstr CDN_PAS_*_MUX groups before physical generic (TUI-234 #2)..."
+foreach_in_collection h [get_db hinsts -if {.name=~"*CDN_PAS_SKIP_MUX*" || .name=~"*CDN_PAS_CONNECTED_MUX*"}] {
+    catch { set_db $h .ungroup_ok true }
+    catch { set_db $h .module.ungroup_ok true }
+    catch { set_db $h .module.advstr_keep_structure 0 }
+    catch { ungroup -simple $h }
+}
+
 syn_generic -physical
 syn_map -physical
 syn_opt -spatial

@@ -60,7 +60,14 @@ cd synth
 ## 诚实边界
 - 没有上 SRAM：K/V tile 只有 16 行深，实测换 SRAM 会使面积涸 3-4 倍或令 cycles 爆炸
   （SRAM 只在深存储划算）。本设计无深片上存储，故 tile 保持触发器是更优解。
-- 没动 `flash_core` 的动态下标写：它们不被 ungroup，不会触发 TUI-234；强行译码反而增加
-  BQ 路 mux 面积、并有引 bug 风险，收益为负。
+- 没动 `flash_core` 的动态下标写：强行译码会增加 BQ 路 mux 面积、并有引 bug 风险，收益为负。
+  > **更正（genus (1).log1，2026-06-16）**：旧说法"flash_core 不会触发 TUI-234"是**错的**。
+  > 仅 ungroup dma 后，`syn_generic -physical`（**第二遍** generic）仍因 flash_core 的
+  > `CDN_PAS_SKIP_MUX_0i`（causal-skip mux，`USE_CAUSAL_SKIP=1`）报 TUI-234 退出。
+  > 真因不是 dma 边界，而是 **advstr 跑了两遍**：第一遍 `syn_generic` 把 SKIP_MUX_0i 作为 CAS
+  > 层级**保留**（advstr_keep_structure=1），第二遍又在其内部建了**同名嵌套** SKIP_MUX_0i，
+  > `group [all_fanin]` 跨这层嵌套边界即 TUI-234。
+  > **已修**：在两遍 generic 之间溶解所有 `CDN_PAS_*_MUX` 组（见 `genus_ispatial.tcl` "TUI-234 fix #2"），
+  > 让物理 generic 从扁平 fan-in 重新开始，不保留 dma ungroup（dma 仍需 ungroup，两者叠加）。
 - 若 5ns 首轮未收敛：**零 cycle 代价**的下一步是给 producer 的 `scaled_score → buf_score` 路径
   补一级寄存（ping-pong 有 slack），而**不是**动 II=1 的 MAC 内环（那会加 cycles）。
