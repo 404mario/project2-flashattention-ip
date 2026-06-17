@@ -30,7 +30,7 @@
   正确性验收阈值（MAE≤0.03 / MaxE≤0.10）、ASIC 后端指标（面积 ≤200 万门、延迟 <300k cycles）。
 - 🛠 **[Genus 综合中断（TUI-234）排错](docs/genus_synthesis_troubleshooting.md)** — `syn_generic
   -physical` 第二遍 generic 因 advstr 跨层级 group flash_core 的 `CDN_PAS_SKIP_MUX_0i` 而中断，
-  根因分析与已落地修复（修复在 `codex-baseline-v2-dma-prefetch-synthopt` 分支）。
+  根因分析与已落地修复（修复在 `baseline-v2-synthopt` 分支）。
 
 ---
 
@@ -773,28 +773,27 @@ i = 255 时，允许 j = 0 ... 255
 
 ## 8. Collaboration Workflow
 
-推荐分支结构：
+当前分支布局（2026-06 整理后，共 5 个）：
 
 ```text
-main                 稳定可提交版本
-dev                  日常集成版本
-feature/model        算法模型开发
-feature/core-rtl     计算核心 RTL 开发
-feature/axi-dma      AXI / DMA / top 开发
-feature/tb           testbench 开发
-docs/report          文档和报告开发
+main                  主干
+baseline-v2-synthopt  ★当前主力：baseline 的 v2 流式优化版（II=1 dot_stream + softmax_combine）
+                      已 bit-exact 验证、已修 Genus TUI-234，目标 5ns clean
+8nsclean-baseline     唯一完整综合过的 baseline：8ns clean / slack +2ps / 7.84M cell area（≈163.5万门）
+bonus-v2-synthopt     bonus 的 v2 优化版
+8nsclean-bonus        bonus 的 8ns 综合版
 ```
+
+> 已删除的实验分支（旧 `codex-*` 命名）均已打 `archive/` tag 备份，可按需找回。
+> 文档中若仍出现旧分支名，对照 `CLAUDE.md` 的分支表换算。
 
 开发流程：
 
 ```text
-1. 从 dev 拉取最新代码
-2. 在自己的 feature 分支开发
-3. 完成一个小功能后 commit
-4. push 到 GitHub
-5. 创建 Pull Request 到 dev
-6. 至少一名队友 review 后 merge
-7. dev 测试稳定后再合并到 main
+1. 从对应主力分支拉取最新代码
+2. 改动后用 sim/ 下的脚本做 bit-exact 回归（见 §11 / CLAUDE.md）
+3. 综合用 ./synth/run_genus.sh（EDA 服务器）
+4. commit + push；评测以 8nsclean-* 与 *-v2-synthopt 为准
 ```
 
 常用命令：

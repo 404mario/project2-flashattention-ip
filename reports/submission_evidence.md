@@ -1,6 +1,6 @@
 # Baseline Submission Evidence
 
-Branch: `codex-baseline-core-pipeline-fmax`
+Branch: `8nsclean-baseline`（旧名 codex-baseline-core-pipeline-fmax）
 Synthesis package: `baseline_6.5`
 Synthesis commit: `9d1d4d8`
 

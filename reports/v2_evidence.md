@@ -1,6 +1,6 @@
 # v2 Streaming Architecture — Evidence
 
-Branch: `codex-baseline-v2-streaming-arch`. Sim: iverilog (functional self-check) +
+Branch: `baseline-v2-synthopt`（v2 流式证据，旧名 codex-baseline-v2-streaming-arch）. Sim: iverilog (functional self-check) +
 `model/compare_hex.py` vs FP32 `tb/vectors/golden_o.hex`. Synthesis (area/timing) pending Genus.
 
 ## Unit tests (iverilog)
@@ -15,7 +15,7 @@ Branch: `codex-baseline-v2-streaming-arch`. Sim: iverilog (functional self-check
 |---|---:|---:|---:|---:|---:|---|
 | Random vectors (RUN_VECTORS, supplied Q/K/V) vs golden | 154,784 | 589,824 | 32,768 | 0.000097 | 0.054688 | **PASS** |
 | Default generated tensors (RUN_FULL) | 154,784 | 589,824 | 32,768 | (self-check) | | PASS |
-| baseline reference (`core-pipeline-fmax`) | 233,312 | 589,824 | 32,768 | 0.000097 | 0.054688 | PASS |
+| baseline reference (`8nsclean-baseline`) | 233,312 | 589,824 | 32,768 | 0.000097 | 0.054688 | PASS |
 
 cycles −34% vs baseline; accuracy identical. Cycle count is input-independent (fixed causal schedule).
 

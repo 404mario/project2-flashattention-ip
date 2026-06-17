@@ -1,6 +1,6 @@
 # DMA Prefetch / Producer-Consumer Overlap — 设计与论证
 
-分支：`codex-baseline-v2-dma-prefetch`（基于 v2 流式核）。
+分支：`baseline-v2-synthopt`（基于 v2 流式核）。
 目标：把 DMA 搬运与计算重叠,消除 v2 仍存在的 DMA 串行瓶颈,同时保持完全符合赛题要求。
 
 ---
