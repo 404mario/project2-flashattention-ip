@@ -61,7 +61,14 @@
 ### 优先完成 — ASIC 后端与性能评估
 
 - **主频**：频率越高越好，基于 **Cadence Genus 物理综合报告**说明，鼓励进一步 P&R 收敛。
-- **面积**：等效逻辑门数 **≤ 200 万门**（含存储器折算，按 Genus 报告 2-input NAND 等效口径）。
+- **面积**：等效逻辑门数 **≤ 200 万门**（硬性约束）。换算口径为老师在赛题群给出的官方公式，
+  以 Genus 报告的 **total cell area**（µm²，**不含 net area**）除以 PDK `sky130_fd_sc_hs` 的
+  `NAND2_X1` 单元面积：
+  ```
+  gate_equivalent = total_cell_area / area(NAND2_X1) = total_cell_area / 4.7952
+  ```
+  即 200 万门 ⇔ `total cell area ≤ 2,000,000 × 4.7952 ≈ 9.59M µm²`。
+  参考：`8nsclean-baseline` 实测 `total cell area = 7.84M µm² → 1,635,000 门`（占约束 81.8%）。
 - **延迟**：单次 attention（S=256、d=64、causal）执行周期数 **< 300k cycles**。
 - **带宽**：给出 `RD_BYTES / WR_BYTES` 统计与优化分析（tile 缓存、数据复用等）。
 
