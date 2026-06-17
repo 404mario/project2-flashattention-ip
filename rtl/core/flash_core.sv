@@ -189,6 +189,17 @@ module flash_core #(
     logic signed [ACC_W-1:0] sc_m_in;
     logic [L_W-1:0]          sc_l_in;
     cstate_t cstate_q;            // (declared here so sc_start can reference it)
+    // ---- streamed v/score feed to softmax_combine (kills dynamic v_tile[j_q] mux) ----
+    // u_combine asks for the next key via sc_vreq_*; we register v_tile[idx] and the
+    // matching score here and feed them back. The 16:1 dynamic mux now lives in
+    // flash_core behind a register (like k_tile[feed_idx_q] -> dot_stream), so the
+    // physical advanced-structuring pass no longer builds a CDN_PAS_SKIP_MUX that
+    // straddles the u_combine boundary (root fix for TUI-234). Bit-exact: the value
+    // registered when idx=k was requested arrives the cycle u_combine MACs key k.
+    logic                     sc_vreq_valid;
+    logic [LEN_W-1:0]         sc_vreq_idx;
+    logic signed [DATA_W-1:0] v_row_q [0:D_MODEL-1];
+    logic signed [ACC_W-1:0]  score_cur_q;
     int si, ci;
     always_comb begin
         for (si = 0; si < BK; si = si + 1) sc_score_in[si] = buf_score[cons_buf_q][si];
@@ -205,10 +216,27 @@ module flash_core #(
         .WEIGHT_W(WEIGHT_W), .WEIGHT_FRAC(WEIGHT_FRAC), .SCORE_FRAC(SOFTMAX_FRAC), .L_W(L_W)
     ) u_combine (
         .clk(clk), .rst_n(rst_n), .start(sc_start), .row_first(sc_row_first),
-        .tile_len(sc_tile_len), .score_in(sc_score_in), .v_tile(v_tile),
+        .tile_len(sc_tile_len), .score_in(sc_score_in),
+        .vreq_valid(sc_vreq_valid), .vreq_idx(sc_vreq_idx),
+        .v_row_in(v_row_q), .score_cur_in(score_cur_q),
         .m_in(sc_m_in), .l_in(sc_l_in), .acc_in(sc_acc_in),
         .busy(sc_busy), .done(sc_done), .m_out(sc_m_out), .l_out(sc_l_out), .acc_out_flat(sc_acc_out_flat)
     );
+
+    // Prefetch the requested V row + score one cycle ahead of u_combine's S_MAC.
+    // v_tile is held stable by the DMA/top for the whole tile; cons_buf_q is stable
+    // across the kick+run window, so this delayed read is value-identical to the
+    // old direct v_tile[j_q]/score_in[j_q] index, just registered.
+    int pf;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (pf = 0; pf < D_MODEL; pf = pf + 1) v_row_q[pf] <= '0;
+            score_cur_q <= '0;
+        end else if (sc_vreq_valid) begin
+            for (pf = 0; pf < D_MODEL; pf = pf + 1) v_row_q[pf] <= v_tile[sc_vreq_idx][pf];
+            score_cur_q <= buf_score[cons_buf_q][sc_vreq_idx];
+        end
+    end
 
     // ---- normalizer (reused) ----
     logic signed [ACC_W-1:0] norm_acc;

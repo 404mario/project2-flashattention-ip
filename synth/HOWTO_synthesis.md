@@ -26,23 +26,23 @@ genus -f synth/genus_ispatial.tcl             # ② 一定用 _ispatial（物理
 - 原因：当时 cwd 在 `.../baseline/synth` 里，又写相对路径 `synth/genus.tcl`，自然找不到；
 - 而且 **`genus.tcl` 是旧的逻辑流，不是我们要的**。
 
-### 坑 3：用错了流 —— `genus.tcl`（逻辑） vs `genus_ispatial.tcl`（物理）★最重要
-| | `genus.tcl`（逻辑流） | `genus_ispatial.tcl`（物理/iSpatial 流）★用这个 |
-|---|---|---|
-| 加载 | 只标准单元 .lib | + LEF + QRC 物理库 |
-| 综合 | 纯逻辑、wireload 估时 | 布局感知（placement-aware）|
-| Net Area | 0 | 真实布线面积 |
-| 时序/面积 | 偏乐观、不准 | **真实 PPA（提交/评测要这个）** |
-| 报告目录 | `synth/reports/` | `synth/reports_ispatial_<period>ns/` |
+### 坑 3：用错了脚本 —— 只剩 `genus_ispatial.tcl`（物理/iSpatial 流）★最重要
+**2026-06-17 起：冗余的 `genus.tcl` 已删除，synth/ 下只保留 `genus_ispatial.tcl` 一份。**
+之前 `genus.tcl` 与 `genus_ispatial.tcl` 几乎相同却容易被手误 `genus -f genus.tcl` 跑到，造成混乱。
+`run_genus.sh`/`run_sweep.sh` 一直调 `genus_ispatial.tcl`，不受影响。
 
-→ 后端同学"专门做 ispatial"是对的。`run_genus.sh` 现已改为调用 `genus_ispatial.tcl`。
+iSpatial（物理）流的价值：加载 LEF+QRC 物理库、布局感知综合、真实布线面积与 PPA
+（提交/评测必须用它），报告写到 `synth/reports_ispatial_<period>ns/`。
 
-### 坑 4：`TUI-234 ... [group]` 在 `syn_generic -physical` 阶段退出
-- 根因：iSpatial 的 **advanced-structuring** 步骤会对组合逻辑锥做内部 `group`，当它跨
-  `dma↔core` 边界去 group `dma_controller` 的 `CDN_PAS_SKIP_MUX` 时报 TUI-234。
-- 修法：`genus_ispatial.tcl` 里 **ungroup 仅 `u_dma_controller`**（溶解这一个小块边界，
-  不是整设计砸平）。真·8ns baseline 当年就这么干、干净跑完 ≈7.8h。
-- **自检**：`grep -c "ungroup -simple" synth/genus_ispatial.tcl` 必须 ≥ 1。
+### 坑 4：`TUI-234 ... [group]` 在 `syn_generic -physical` 阶段退出 ★已 RTL 治本
+- 根因（最终定位）：`syn_generic -physical` 的 **advanced-structuring** 把 `softmax_combine`
+  里的 `v_tile[j_q]` 动态行选 mux（行215）结构化成 `CDN_PAS_SKIP_MUX`，其组合锥跨
+  `flash_core/u_combine` 边界 `group` → TUI-234。详见 `docs/genus_synthesis_troubleshooting.md`。
+- **治本修法（已落地）**：在 RTL 把 V 改为**流式喂入**（`flash_core` 用寄存器逐行喂给
+  `softmax_combine`，仿 `dot_stream` 喂 `k` 的范式），消除跨边界动态 mux。bit-exact、cycle 数不变。
+- 脚本侧仍保留两层兜底（理论上 RTL 改后不触发）：`ungroup u_dma_controller` + 两遍 generic 间
+  溶解 `CDN_PAS_*_MUX`（搜 `TUI-234 fix #2`）。
+- **自检**：`grep -c "ungroup -simple" synth/genus_ispatial.tcl` 应 ≥ 1。
 
 ### 坑 5（附带）：`./run_genus.sh` → permission denied
 git 里该脚本曾掉成 `100644`。已修为 `100755`。临时绕过：`tcsh synth/run_genus.sh`。

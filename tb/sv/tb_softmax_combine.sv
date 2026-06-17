@@ -19,8 +19,8 @@ module tb_softmax_combine;
     logic clk = 0, rst_n = 0;
     logic start, row_first;
     logic [LEN_W-1:0] tile_len;
-    logic signed [ACC_W-1:0]  score_in [0:BK-1];
-    logic signed [DATA_W-1:0] v_tile   [0:BK-1][0:D_MODEL-1];
+    logic signed [ACC_W-1:0]  score_in [0:BK-1];           // full score array (max_comb), driven as before
+    logic signed [DATA_W-1:0] v_tile   [0:BK-1][0:D_MODEL-1]; // per-tile V store (TB-side memory)
     logic signed [ACC_W-1:0]  m_in;
     logic [L_W-1:0]           l_in;
     logic signed [ACC_W-1:0]  acc_in [0:D_MODEL-1];
@@ -31,13 +31,31 @@ module tb_softmax_combine;
     logic signed [ACC_W-1:0]  acc_out [0:D_MODEL-1];
     always_comb for (int u = 0; u < D_MODEL; u++) acc_out[u] = acc_out_flat[u*ACC_W +: ACC_W];
 
+    // ---- streamed v/score feed: mirror flash_core's 1-cycle-ahead prefetch ----
+    logic                     vreq_valid;
+    logic [LEN_W-1:0]         vreq_idx;
+    logic signed [DATA_W-1:0] v_row_in [0:D_MODEL-1];
+    logic signed [ACC_W-1:0]  score_cur_in;
+    int pf;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (pf = 0; pf < D_MODEL; pf = pf + 1) v_row_in[pf] <= '0;
+            score_cur_in <= '0;
+        end else if (vreq_valid) begin
+            for (pf = 0; pf < D_MODEL; pf = pf + 1) v_row_in[pf] <= v_tile[vreq_idx][pf];
+            score_cur_in <= score_in[vreq_idx];
+        end
+    end
+
     softmax_combine #(
         .D_MODEL(D_MODEL), .BK(BK), .DATA_W(DATA_W), .ACC_W(ACC_W),
         .WEIGHT_W(WEIGHT_W), .WEIGHT_FRAC(WEIGHT_FRAC),
         .SCORE_FRAC(SCORE_FRAC), .L_W(L_W)
     ) dut (
         .clk(clk), .rst_n(rst_n), .start(start), .row_first(row_first),
-        .tile_len(tile_len), .score_in(score_in), .v_tile(v_tile),
+        .tile_len(tile_len), .score_in(score_in),
+        .vreq_valid(vreq_valid), .vreq_idx(vreq_idx),
+        .v_row_in(v_row_in), .score_cur_in(score_cur_in),
         .m_in(m_in), .l_in(l_in), .acc_in(acc_in),
         .busy(busy), .done(done), .m_out(m_out), .l_out(l_out), .acc_out_flat(acc_out_flat)
     );

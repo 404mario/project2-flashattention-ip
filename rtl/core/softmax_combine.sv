@@ -36,8 +36,20 @@ module softmax_combine #(
     input  logic start,                                  // pulse: process this (row,tile)
     input  logic row_first,                              // 1 => first tile of the row (init from this tile)
     input  logic [$clog2(BK+1)-1:0] tile_len,            // valid keys in tile (<= BK)
-    input  logic signed [ACC_W-1:0]  score_in [0:BK-1],  // scaled+masked scores (held stable)
-    input  logic signed [DATA_W-1:0] v_tile   [0:BK-1][0:D_MODEL-1],
+    input  logic signed [ACC_W-1:0]  score_in [0:BK-1],  // FULL score array, used ONLY by max_comb reduction (static, no dynamic index)
+
+    // ---- streamed per-key operands (replaces dynamic v_tile[j_q]/score_in[j_q]) ----
+    // We announce the next key index one cycle ahead via vreq_*; flash_core
+    // registers v_tile[vreq_idx]/score[vreq_idx] and feeds them back as v_row_in/
+    // score_cur_in. This moves the 16:1 dynamic mux OUT of this module and behind a
+    // register before it crosses the boundary -- same trick dot_stream uses for k_tile --
+    // so Genus advanced-structuring (CDN_PAS_SKIP_MUX) no longer straddles the
+    // flash_core/u_combine hierarchy and TUI-234 cannot recur. Behaviour is bit-exact
+    // (the registered value arriving at MAC cycle k equals the old v_tile[k]/score_in[k]).
+    output logic                     vreq_valid,         // high when vreq_idx is the key we'll MAC next cycle
+    output logic [$clog2(BK+1)-1:0]  vreq_idx,           // index of that key (<= tile_len-1 <= BK-1)
+    input  logic signed [DATA_W-1:0] v_row_in [0:D_MODEL-1], // registered v_tile[<prev vreq_idx>]
+    input  logic signed [ACC_W-1:0]  score_cur_in,       // registered score_in[<prev vreq_idx>]
 
     input  logic signed [ACC_W-1:0] m_in,
     input  logic [L_W-1:0]          l_in,
@@ -192,9 +204,19 @@ module softmax_combine #(
             if ((mi < tile_len) && (score_in[mi] > max_comb)) max_comb = score_in[mi];
     end
 
-    // current-key weight (stage B), combinational
+    // current-key weight (stage B), combinational.
+    // score_cur_in is the registered score_in[j_q] streamed in from flash_core.
     logic [WEIGHT_W-1:0]     w_cur;
-    assign w_cur = exp_w(score_in[j_q] - m_tile_q);
+    assign w_cur = exp_w(score_cur_in - m_tile_q);
+
+    // ---- next-key request (1 cycle ahead) ----------------------------------
+    // At S_IDLE&start we pre-request key 0 (consumed at the first S_MAC cycle).
+    // During S_MAC we request j_q+1 while MAC-ing j_q, so the registered value is
+    // ready the next cycle. We stop requesting on the last key (j_q==len-1), which
+    // also guarantees vreq_idx <= len_q-1 <= BK-1 (never out of v_tile[0:BK-1]).
+    assign vreq_valid = (state_q == S_IDLE && start) ||
+                        (state_q == S_MAC  && (j_q != len_q - 1'b1));
+    assign vreq_idx   = (state_q == S_MAC  && (j_q != len_q - 1'b1)) ? (j_q + 1'b1) : '0;
 
     // merge correction factors (stage C), combinational
     logic signed [ACC_W-1:0] m_new_comb;
@@ -210,9 +232,9 @@ module softmax_combine #(
     logic signed [MULW-1:0]   mulP [0:D_MODEL-1];
     int mk;
     always_comb begin
-        // default S_MAC: v_j * w_cur
+        // default S_MAC: v_j * w_cur  (v_row_in = registered v_tile[j_q] streamed from flash_core)
         mulB = w_cur;
-        for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = $signed(v_tile[j_q][mk]);
+        for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = $signed(v_row_in[mk]);
         if (state_q == S_MOLD) begin            // acc_state(old) * corr_old
             mulB = corr_old;
             for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = acc_state_q[mk];
