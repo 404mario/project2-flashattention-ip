@@ -114,11 +114,14 @@ check_timing > [file join $RPT_DIR 01_check_timing_pre_synth.rpt]
 if {[catch {set_db max_cpus_per_server 8} m]} { puts "WARN: max_cpus_per_server: $m" }
 if {[catch {set_db auto_super_thread   true} m]} { puts "WARN: auto_super_thread: $m" }
 
-# Effort settings. HIGH effort: we are doing one focused 5 ns-clean push (not a
-# sweep), so spend the extra optimization time to maximize the chance of closing.
-set_db syn_generic_effort high
-set_db syn_map_effort     high
-set_db syn_opt_effort     high
+# Effort settings. MEDIUM effort: now that softmax_combine is properly pipelined
+# (exp | multiply | accumulate split across registers), the 5 ns critical path is
+# feasible without the tool fighting it, so medium effort closes faster and avoids
+# the high-effort drive-up/clone area inflation. The genuine 8 ns baseline also
+# closed clean at medium. Bump back to high only if a medium run leaves small slack.
+set_db syn_generic_effort medium
+set_db syn_map_effort     medium
+set_db syn_opt_effort     medium
 
 # Register retiming: allow Genus to rebalance the pipeline registers across the
 # dot_stream adder tree / combine datapath to hit a shorter period. Preserves

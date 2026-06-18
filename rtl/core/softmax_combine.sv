@@ -179,9 +179,30 @@ module softmax_combine #(
         end
     endfunction
 
-    // S_MOLD/S_MNEW = the two merge phases that TIME-SHARE the 64-wide multiplier
-    // array with S_MAC (resource sharing: 64 mults total instead of 64 MAC + 128 merge).
-    typedef enum logic [2:0] { S_IDLE, S_MAC, S_FIRST, S_MOLD, S_MNEW } state_t;
+    // ========================================================================
+    // PIPELINED datapath (5ns timing fix). The original did exp -> 64-wide
+    // multiply -> accumulate ALL in one cycle (~9.8ns critical path). We split
+    // that chain into a 3-stage pipeline shared by the MAC inner loop and the
+    // two cross-tile merge ops:
+    //     E : exp_w (LUT+interp)  ->  s1
+    //     X : 64-wide multiply    ->  s2
+    //     A : accumulate / add    ->  acc registers
+    // II=1 is preserved (only the A-stage adder is loop-carried). All arithmetic
+    // (exp_w, widths, shifts, scale_l) is BIT-IDENTICAL to the old single-cycle
+    // version -- we only register between the exp, the multiply and the add, so
+    // the per-tile result is unchanged; latency grows by a few drain cycles
+    // (negligible vs the <300k cycle budget). The 64-wide multiplier is still
+    // shared (time-multiplexed by the in-flight op's mode), so no extra mults.
+    // ========================================================================
+    localparam logic [1:0] MODE_MAC = 2'd0, MODE_OLD = 2'd1, MODE_NEW = 2'd2;
+    localparam int MULW = ACC_W + WEIGHT_W + 2;
+
+    // FSM: MAC issue (len cycles) -> 2 drain -> first-copy OR (issue OLD,NEW ->
+    // 2 drain). Issue states drive the E stage; drains let the pipe empty so the
+    // acc registers are final before they are read/copied.
+    typedef enum logic [3:0] {
+        S_IDLE, S_MAC, S_DR1, S_DR2, S_FIRST, S_OLD, S_NEW, S_MDR1, S_MDR2
+    } state_t;
     state_t state_q;
 
     logic [LEN_W-1:0]        len_q;
@@ -195,7 +216,7 @@ module softmax_combine #(
     logic [L_W-1:0]          l_state_q;
     logic signed [ACC_W-1:0] acc_state_q [0:D_MODEL-1];
 
-    // combinational tile-max over valid scores
+    // combinational tile-max over valid scores (UNCHANGED)
     logic signed [ACC_W-1:0] max_comb;
     int mi;
     always_comb begin
@@ -204,48 +225,92 @@ module softmax_combine #(
             if ((mi < tile_len) && (score_in[mi] > max_comb)) max_comb = score_in[mi];
     end
 
-    // current-key weight (stage B), combinational.
-    // score_cur_in is the registered score_in[j_q] streamed in from flash_core.
+    // current-key weight, combinational. score_cur_in is the registered
+    // score_in[j_q] streamed in from flash_core. (UNCHANGED expression)
     logic [WEIGHT_W-1:0]     w_cur;
     assign w_cur = exp_w(score_cur_in - m_tile_q);
 
-    // ---- next-key request (1 cycle ahead) ----------------------------------
-    // At S_IDLE&start we pre-request key 0 (consumed at the first S_MAC cycle).
-    // During S_MAC we request j_q+1 while MAC-ing j_q, so the registered value is
-    // ready the next cycle. We stop requesting on the last key (j_q==len-1), which
-    // also guarantees vreq_idx <= len_q-1 <= BK-1 (never out of v_tile[0:BK-1]).
+    // ---- next-key request (1 cycle ahead) -- UNCHANGED protocol -------------
+    // The MAC issue cadence (one key issued per S_MAC cycle, j_q=0..len-1) is
+    // identical to the old loop, so flash_core's prefetch of v_row_in/score_cur_in
+    // stays perfectly aligned. Only the downstream multiply/accumulate is delayed.
     assign vreq_valid = (state_q == S_IDLE && start) ||
                         (state_q == S_MAC  && (j_q != len_q - 1'b1));
     assign vreq_idx   = (state_q == S_MAC  && (j_q != len_q - 1'b1)) ? (j_q + 1'b1) : '0;
 
-    // merge correction factors (stage C), combinational
+    // merge correction factors, combinational (UNCHANGED expressions).
+    // m_state_q is stable across the OLD/NEW issue+drain window (only written by
+    // the NEW A-stage at the very end), so corr_old/corr_new/m_new_comb are stable.
     logic signed [ACC_W-1:0] m_new_comb;
     logic [WEIGHT_W-1:0]     corr_old, corr_new;
     assign m_new_comb = (m_state_q > m_tile_q) ? m_state_q : m_tile_q;
     assign corr_old   = exp_w(m_state_q - m_new_comb);
     assign corr_new   = exp_w(m_tile_q  - m_new_comb);
 
-    // ---- shared 64-wide multiplier array (operands muxed by state) ----
-    localparam int MULW = ACC_W + WEIGHT_W + 2;
-    logic signed [ACC_W-1:0]  mulA [0:D_MODEL-1];
-    logic [WEIGHT_W-1:0]      mulB;
-    logic signed [MULW-1:0]   mulP [0:D_MODEL-1];
-    int mk;
+    // ===================== E stage (exp result + operand select) =============
+    logic                     e_vld;
+    logic [1:0]               e_mode;
+    logic [WEIGHT_W-1:0]      e_w;
+    logic signed [ACC_W-1:0]  e_mulA [0:D_MODEL-1];
+    logic [L_W-1:0]           e_lval;
+    logic signed [ACC_W-1:0]  e_mnew;
+    int ek;
     always_comb begin
-        // default S_MAC: v_j * w_cur  (v_row_in = registered v_tile[j_q] streamed from flash_core)
-        mulB = w_cur;
-        for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = $signed(v_row_in[mk]);
-        if (state_q == S_MOLD) begin            // acc_state(old) * corr_old
-            mulB = corr_old;
-            for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = acc_state_q[mk];
-        end else if (state_q == S_MNEW) begin   // acc_inner * corr_new
-            mulB = corr_new;
-            for (mk = 0; mk < D_MODEL; mk = mk + 1) mulA[mk] = acc_inner_q[mk];
-        end
-        for (mk = 0; mk < D_MODEL; mk = mk + 1)
-            mulP[mk] = mulA[mk] * $signed({1'b0, mulB});
+        e_vld  = 1'b0;
+        e_mode = MODE_MAC;
+        e_w    = w_cur;
+        e_lval = '0;
+        e_mnew = m_new_comb;
+        for (ek = 0; ek < D_MODEL; ek = ek + 1) e_mulA[ek] = $signed(v_row_in[ek]);
+        case (state_q)
+            S_MAC: begin                          // issue MAC key j_q: w=exp_w(score-m_tile), mulA=v
+                e_vld  = 1'b1; e_mode = MODE_MAC; e_w = w_cur;
+            end
+            S_OLD: begin                          // issue OLD: scale running state by corr_old
+                e_vld  = 1'b1; e_mode = MODE_OLD; e_w = corr_old; e_lval = l_state_q;
+                for (ek = 0; ek < D_MODEL; ek = ek + 1) e_mulA[ek] = acc_state_q[ek];
+            end
+            S_NEW: begin                          // issue NEW: add this tile's partials * corr_new
+                e_vld  = 1'b1; e_mode = MODE_NEW; e_w = corr_new; e_lval = l_part_q; e_mnew = m_new_comb;
+                for (ek = 0; ek < D_MODEL; ek = ek + 1) e_mulA[ek] = acc_inner_q[ek];
+            end
+            default: e_vld = 1'b0;
+        endcase
     end
 
+    // s1 pipeline registers (E -> X)
+    logic                     s1_vld;
+    logic [1:0]               s1_mode;
+    logic [WEIGHT_W-1:0]      s1_w;
+    logic signed [ACC_W-1:0]  s1_mulA [0:D_MODEL-1];
+    logic [L_W-1:0]           s1_lval;
+    logic signed [ACC_W-1:0]  s1_mnew;
+
+    // ===================== X stage (the 64-wide multiply) ====================
+    // Same product as the old mulP[d] = mulA[d] * $signed({1'b0,mulB}); plus the
+    // scalar l product = lval*w (== scale_l's internal val*w).
+    logic signed [MULW-1:0]   x_prod [0:D_MODEL-1];
+    logic [L_W+WEIGHT_W:0]    x_lprod;
+    int xk;
+    always_comb begin
+        for (xk = 0; xk < D_MODEL; xk = xk + 1)
+            x_prod[xk] = s1_mulA[xk] * $signed({1'b0, s1_w});
+        x_lprod = s1_lval * s1_w;
+    end
+
+    // s2 pipeline registers (X -> A)
+    logic                     s2_vld;
+    logic [1:0]               s2_mode;
+    logic [WEIGHT_W-1:0]      s2_w;
+    logic signed [MULW-1:0]   s2_prod [0:D_MODEL-1];
+    logic [L_W+WEIGHT_W:0]    s2_lprod;
+    logic signed [ACC_W-1:0]  s2_mnew;
+
+    // A-stage l rescale (matches scale_l: (val*w) >> WEIGHT_FRAC, truncated to L_W)
+    logic [L_W-1:0] a_lscaled;
+    assign a_lscaled = s2_lprod >> WEIGHT_FRAC;
+
+    // outputs (UNCHANGED)
     assign busy  = (state_q != S_IDLE);
     assign m_out = m_state_q;
     assign l_out = l_state_q;
@@ -266,8 +331,58 @@ module softmax_combine #(
             for (d = 0; d < D_MODEL; d = d + 1) begin
                 acc_inner_q[d] <= '0; acc_state_q[d] <= '0;
             end
+            s1_vld <= 1'b0; s1_mode <= MODE_MAC; s1_w <= '0; s1_lval <= '0; s1_mnew <= '0;
+            s2_vld <= 1'b0; s2_mode <= MODE_MAC; s2_w <= '0; s2_lprod <= '0; s2_mnew <= '0;
+            for (d = 0; d < D_MODEL; d = d + 1) begin
+                s1_mulA[d] <= '0; s2_prod[d] <= '0;
+            end
         end else begin
             done <= 1'b0;
+
+            // ---- pipeline shift: E -> s1 ----
+            s1_vld  <= e_vld;
+            s1_mode <= e_mode;
+            s1_w    <= e_w;
+            s1_lval <= e_lval;
+            s1_mnew <= e_mnew;
+            for (d = 0; d < D_MODEL; d = d + 1) s1_mulA[d] <= e_mulA[d];
+
+            // ---- pipeline shift: X -> s2 ----
+            s2_vld   <= s1_vld;
+            s2_mode  <= s1_mode;
+            s2_w     <= s1_w;
+            s2_lprod <= x_lprod;
+            s2_mnew  <= s1_mnew;
+            for (d = 0; d < D_MODEL; d = d + 1) s2_prod[d] <= x_prod[d];
+
+            // ---- A stage: apply the op now in s2 to the accumulators ----
+            // (bit-identical to the old S_MAC / S_MOLD / S_MNEW arithmetic)
+            if (s2_vld) begin
+                case (s2_mode)
+                    MODE_MAC: begin               // acc_inner += v*w ; l_part += w
+                        l_part_q <= l_part_q + s2_w;
+                        for (d = 0; d < D_MODEL; d = d + 1)
+                            acc_inner_q[d] <= acc_inner_q[d] + s2_prod[d][ACC_W-1:0];
+                    end
+                    MODE_OLD: begin               // acc_state = acc_state_old*corr_old ; l_state scaled
+                        l_state_q <= a_lscaled;
+                        for (d = 0; d < D_MODEL; d = d + 1)
+                            acc_state_q[d] <= s2_prod[d] >>> WEIGHT_FRAC;
+                    end
+                    MODE_NEW: begin               // acc_state += acc_inner*corr_new ; l_state += ... ; m=m_new
+                        m_state_q <= s2_mnew;
+                        l_state_q <= l_state_q + a_lscaled;
+                        for (d = 0; d < D_MODEL; d = d + 1)
+                            acc_state_q[d] <= acc_state_q[d] + (s2_prod[d] >>> WEIGHT_FRAC);
+                        done <= 1'b1;
+                    end
+                    default: ;
+                endcase
+            end
+
+            // ---- FSM control (textually last: wins on the cycles it writes; the
+            //      A-stage and these never write the same reg on the same cycle
+            //      because the pipe is empty during S_IDLE/S_FIRST) ----
             case (state_q)
                 S_IDLE: if (start) begin
                     len_q <= tile_len; first_q <= row_first; m_tile_q <= max_comb;
@@ -278,36 +393,25 @@ module softmax_combine #(
                     state_q <= S_MAC;
                 end
 
-                S_MAC: begin
-                    // acc_inner += w_j*V_j   (mulP = v*w_cur); loop-carried path = adder
-                    l_part_q <= l_part_q + w_cur;
-                    for (d = 0; d < D_MODEL; d = d + 1)
-                        acc_inner_q[d] <= acc_inner_q[d] + mulP[d][ACC_W-1:0];
-                    if (j_q == len_q - 1) state_q <= (first_q ? S_FIRST : S_MOLD);
+                S_MAC: begin                      // issue one key per cycle (E stage), j_q=0..len-1
+                    if (j_q == len_q - 1) state_q <= S_DR1;
                     else                  j_q <= j_q + 1'b1;
                 end
 
-                S_FIRST: begin                    // first tile of the row: state := tile partials
+                S_DR1: state_q <= S_DR2;          // drain MAC pipe (2 cycles)
+                S_DR2: state_q <= (first_q ? S_FIRST : S_OLD);
+
+                S_FIRST: begin                    // first tile of row: state := tile partials
                     m_state_q <= m_tile_q;
                     l_state_q <= l_part_q;
                     for (d = 0; d < D_MODEL; d = d + 1) acc_state_q[d] <= acc_inner_q[d];
                     done <= 1'b1; state_q <= S_IDLE;
                 end
 
-                S_MOLD: begin                     // phase 1: scale OLD running state by corr_old
-                    l_state_q <= scale_l(l_state_q, corr_old);
-                    for (d = 0; d < D_MODEL; d = d + 1)
-                        acc_state_q[d] <= mulP[d] >>> WEIGHT_FRAC;     // acc_state_old * corr_old
-                    state_q <= S_MNEW;
-                end
-
-                S_MNEW: begin                     // phase 2: add this tile's partials * corr_new
-                    m_state_q <= m_new_comb;
-                    l_state_q <= l_state_q + scale_l(l_part_q, corr_new);
-                    for (d = 0; d < D_MODEL; d = d + 1)
-                        acc_state_q[d] <= acc_state_q[d] + (mulP[d] >>> WEIGHT_FRAC); // + acc_inner*corr_new
-                    done <= 1'b1; state_q <= S_IDLE;
-                end
+                S_OLD:  state_q <= S_NEW;         // issue OLD then NEW back-to-back (E stage)
+                S_NEW:  state_q <= S_MDR1;
+                S_MDR1: state_q <= S_MDR2;        // drain merge pipe; NEW lands in A during S_MDR2
+                S_MDR2: state_q <= S_IDLE;
                 default: state_q <= S_IDLE;
             endcase
         end
