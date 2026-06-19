@@ -1,39 +1,48 @@
-# 综合状态：softmax_combine 已流水化，待重跑 5ns（PIPELINED — PENDING 5ns RERUN）
+# 综合状态：第二次 5ns 已跑（流水化生效），待 E-split 再冲 clean
 
-> 本分支 `baseline-v2-synthopt` 已：(1) 修复 Genus TUI-234；(2) **2026-06-18 把
-> `softmax_combine` 的 `exp→乘→加` 单拍关键路径流水化**（见下）。上一次 5ns 综合失败
-> （slack −4967ps、面积 11.18M µm²/233 万门超标），根因就是那条 ~9.8ns 单拍链；现已流水化，
-> 待在 EDA 服务器**重跑 5ns**。
+> 分支 `baseline-v2-synthopt`。进度：(1) 修复 Genus TUI-234；(2) 把 `softmax_combine` 单拍
+> `exp→乘→加` 重写成 3 级流水（`b56628d`）；(3) **2026-06-19 跑了第二次 5ns**——时序/面积大幅
+> 改善但**两项硬指标仍差一步**；(4) 正在做 `exp_w` E-split（E1|E2）再冲 clean。
 
-## 上一次 5ns 综合（失败，2026-06-18，high effort）
-- Slack **−4967 ps**（worst path ~9.8ns，**5650 条违例**）；Cell Area **11.18M µm² ≈ 233 万门**（超 200 万硬限 16.5%）。
-- 关键路径 = `u_flash_core/u_combine`（softmax_combine）的**单拍**：
-  `exp_w 插值乘法 → 64 路 36×17 乘法阵列 → 36 位累加器`。
-- 面积超标几乎全是**时序虚胖**：非核心区(DMA/AXI/buffer) 1.79M(8ns-clean) → 3.36M(失败 5ns)，+1.57M ≈ 整个超标量；
-  u_combine 满是 buf_16/inv_16 升驱动 + `_dup` 克隆。→ 时序闭合后面积应回落到 ~8–8.5M（达标）。
+## 三方对比（同口径）
 
-## 修法（2026-06-18，已本地逐位验证）
-把 `softmax_combine` 重写成 **3 级流水 E|X|A**（exp | 64 路乘法 | 累加），MAC 键与跨 tile 合并
-（OLD/NEW）共用同一条流水、共用那 64 路乘法器（面积不增）；**算术逐位不变**，II=1 不变，仅 +drain 周期。
-- 端口/function/`exp_w`/`scale_l`/参数/`max_comb`/`vreq` 协议**全不变** → `flash_core.sv` 与 TB 不需改。
-- 综合脚本 effort 从 high 改 **medium**（路径已可行，medium 收敛更快、避免 high 的升驱动虚胖；
-  真实 8ns baseline 也是 medium 干净通过）。retiming 仍开（可再平衡这 3 级）。
+| 指标 | 第一次 `699bff9`（单拍，FAILED） | **第二次 `b56628d`（3 级流水）** | 赛题要求 | `8nsclean`(v2work) |
+|---|---|---|---|---|
+| Worst slack @5ns | −4967 ps | **−602.7 ps** | ≥0（软分） | +1.7 ps @8ns |
+| Violating Paths | 5650 | **638** | **=0** | 0 |
+| Total Cell Area | 11.18M µm²（233 万门，超 16.5%） | **10.19M µm²（212.5 万门，超 6.3%）** | **≤9.59M（200 万门）** | 7.84M（163.5 万门，81.8%） |
+| Cycles | 109,414 | 109,414 | **<300k** | — |
+| Total Power | — | 3.975 W | — | — |
 
-## 当前可信状态（本地 iverilog，逐位等价）
-- **功能 / 精度 / cycles**：全规模 S=256/D=64 causal = **109,414 cycles**（改前 109,410，+4，<300k 预算）；
-  改前/改后输出**逐字节相同**；单元 TB MAE=0.000672/MaxE=0.001272 与改前一致。
-- **面积 / 时序 / 主频 / 功耗**：**待 Genus 重跑后填入**。
+报告归档：
+- 第二次（本次）：`synth/reports_ispatial_5.000ns_b56628d_PIPELINED/`（含原始 tar + provenance README）
+- 第一次（FAILED）：`synth/reports_ispatial_5.000ns_FAILED_699bff9/`
+- 详细分析：`docs/synth_5ns_analysis_2026-06-19.md`
 
-## 5ns 预算与每级延迟预估
-- exp_w 单级 ~3.3ns（含内部插值乘）/ 64 路乘法 ~2.2ns / 加法 ~1.0ns → 都 <5ns 有裕量；瓶颈 exp 级，fmax 约 3.5–4ns。
-- 基准 `8nsclean-baseline`：slack +2ps、7.84M µm²（163.5 万门，81.8%）。
+## 瓶颈：关键路径整条在 `exp_w` 那一拍（E 级）
+
+`30_timing.rpt` Path 1（slack −602.7 ps，data 5584 ps）：
+`m_tile_q_reg[30]` →（`score−m_tile` 减法）→ `exp_w` 64 项 LUT 译码 → 插值乘 `csa_tree_exp_w_247_25` → `s1_w_reg[15]`。
+即第一次的单拍 9780ps 链已被切成 E|X|A 三级，**现在只剩 `exp_w` 单函数本身就 5584ps**，需再劈一刀。
+
+## 面积超标 = 时序虚胖（硬证据）
+
+不在关键路径上的 DMA/AXI（各分支同一份 RTL）：失败 5ns 时 **3.35M µm²**，v2work 8ns **clean 时仅 1.76M**。
+闭合时序后 `syn_opt` 面积回收：`10.19M − (3.35M−1.76M) ≈ 8.60M ≈ 179 万门`（达标，余 ~21 万门）。
+→ **闭合时序同时解决软分(频率)与硬限(面积)。**
+
+## 正在做：`exp_w` E-split（E1|E2）
+
+- **E1**：`score−m_tile` + `abs` + LUT 索引 + 取 `y0/y1` → 寄存；**E2**：插值乘 + 拼权重 → `s1_w`。
+- 纯前馈锥，算术**逐位不变**、端口/`vreq` 协议不变（flash_core/TB 不改）、II=1；cycle +1 拍/merge → ~111.5k（<300k）。
+- 综合 effort **仍 medium**，retiming 保持开。
 
 ## 复现综合 / 判读
 ```bash
-./synth/run_genus.sh          # 默认 5.000ns（effort=medium）
-cat synth/reports_ispatial_5.000ns/10_qor.rpt   # Violating Paths==0 且 Total Cell Area ≤ 9,590,400 µm²(=200万门) 即达标
+./synth/run_genus.sh          # 默认 5.000ns（effort=medium，retiming on）
+cat synth/reports_ispatial_5.000ns/10_qor.rpt   # Violating Paths==0 且 Total Cell Area ≤ 9,590,400 µm² 即两项达标
 ```
-- 若仍有少量违例：大概率是 `m_tile_q<=max_comb` 的 16 路 max 单拍 → 给 m_tile 补一级流水后重跑。
-- 若干净但面积 >9.59M：`CLK_PERIOD_NS=6.0 ./synth/run_genus.sh`（或 `./synth/run_sweep.sh 6 5`），
-  选**既干净又 ≤9.59M 的最快周期**（频率软评分，6ns 干净也是有效提交）。
-- 综合完成后用真实 `reports_ispatial_<period>ns/` 回填本文件与 `reports/synthesis_summary.md`。
+- 若仍少量违例：给 `m_tile_q<=max_comb` 的 16 路 max 补一级流水后重跑。
+- 若干净但面积 >9.59M：`CLK_PERIOD_NS=6.0 ./synth/run_genus.sh`，选**既干净又 ≤9.59M 的最快周期**（频率软评分）。
+- 真·结构换面积（cycles 还有 63% 可烧）：`dot_stream` `DOT_LANES 32→16`；或 combine 的 64 路乘法时分复用。
+- 综合完成后用真实 `reports_ispatial_<period>ns/` 回填本文件与 `docs/synth_5ns_analysis_2026-06-19.md`。
