@@ -31,11 +31,31 @@
 闭合时序后 `syn_opt` 面积回收：`10.19M − (3.35M−1.76M) ≈ 8.60M ≈ 179 万门`（达标，余 ~21 万门）。
 → **闭合时序同时解决软分(频率)与硬限(面积)。**
 
-## 正在做：`exp_w` E-split（E1|E2）
+## 已实现并本地验证：`exp_w` E-split（4 级流水 E1|E2|X|A）
 
-- **E1**：`score−m_tile` + `abs` + LUT 索引 + 取 `y0/y1` → 寄存；**E2**：插值乘 + 拼权重 → `s1_w`。
-- 纯前馈锥，算术**逐位不变**、端口/`vreq` 协议不变（flash_core/TB 不改）、II=1；cycle +1 拍/merge → ~111.5k（<300k）。
+把关键路径那拍 `exp_w` 再劈一刀（`softmax_combine.sv`，本提交）：
+- **E1**：选 delta（MAC/OLD/NEW）+ `m_new=max` + `abs` + LUT 索引 + 读 `y0/y1` → `p1` 寄存；
+  **E2**：`exp_finish` 做插值乘 `y_diff*rem` + 拼权重 → `s1_w`。`exp_finish(exp_prep(d)) ≡ exp_w(d)` 逐位。
+- 纯前馈锥，算术**逐位不变**、端口/`vreq` 协议不变（**flash_core/TB 不改**）、II=1；仅每个 drain 组多 1 拍。
 - 综合 effort **仍 medium**，retiming 保持开。
+
+**本地验证（全绿，2026-06-19）**：
+| 测试 | 结果 |
+|---|---|
+| 单元 TB `tb_softmax_combine` | MAE=0.000672 / MaxE=0.001272（与改前**完全一致**） |
+| medium S=32（改前 GOLD vs 改后） | 输出**逐字节相同**（`cmp` IDENTICAL） |
+| **全规模 S=256 causal（改前 GOLD vs 改后）** | 输出**逐字节相同**，md5 `01697fe8…`；TB PASS |
+| Cycles（S=256） | 109,414 → **109,446**（+32，占 300k 的 36.5%） |
+
+> 复用脚本：`sim/run_fullsize_vectors.sh <label>`（全规模 vs golden + 改前/改后 md5）、
+> `sim/run_smoke_mirror.sh`（small+medium，不被 small 的镜像 1-LSB 伪差中断）。
+> 注：small/medium 对 Python 定点镜像有 1-LSB 伪差（改前 GOLD 也有，小配置舍入角，非 bug）；
+> 全规模 S=256 下 RTL 与镜像 max_abs_int=**0**，vs FP32 golden MaxE=0.0547<0.10、MAE=0.000097<0.03（合规）。
+
+## 预期与判读（下一次 5ns 综合）
+
+- E1≈2.95ns（含 m_new 的 16 路 max 前缀）、E2≈2.6ns，均 < 4.79ns required（~1.8ns 裕量）→ 预期 5ns clean。
+- 面积：闭合时序后非核心 DMA/AXI 由 3.35M 回落 ~1.76M → 总 ≈8.6M ≈179 万门（达标，余 ~21 万门）。
 
 ## 复现综合 / 判读
 ```bash
