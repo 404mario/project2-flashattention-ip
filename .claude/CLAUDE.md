@@ -3,9 +3,19 @@
 Repository: `404mario/project2-flashattention-ip` — 课程 Project 2 FlashAttention 硬件加速器 IP。
 
 ## 现在在哪（一句话）
-v2 流式架构（II=1 `dot_stream` + `softmax_combine`）已 **bit-exact 验证通过**，并已**修好 Genus
-`syn_generic -physical` 的 TUI-234**（可综合）。当前阶段：在 Cadence Genus 上**冲 5ns clean**，
-拿真实 PPA。功能/精度/cycles 不再动。
+v2 流式架构（II=1 `dot_stream` + `softmax_combine`）已 **bit-exact 验证通过**，已**修好 Genus
+TUI-234**。当前阶段：在 Cadence Genus 上**冲 5ns clean**。功能/精度/cycles 不再动。
+
+## 5ns 进度（2026-06-19，读这里先了解现状）
+- **第二次 5ns 综合已完成**（RTL `b56628d`）：slack **−602.7ps**、违例 **638**、cell area **10.19M µm²
+  （212.5 万门，超 200 万限 6.3%）**、cycles 109414。比第一次(−4967/5650/11.18M)大幅改善但**两项硬指标仍差一步**。
+  报告归档 `synth/reports_ispatial_5.000ns_b56628d_PIPELINED/`，分析 `docs/synth_5ns_analysis_2026-06-19.md`。
+- 关键路径整条在 `u_combine` 的 **exp_w 那一拍**；**面积超标几乎全是时序虚胖**（不在关键路径的
+  DMA/AXI 失败时 3.35M，8ns-clean 时仅 1.76M）→ 闭合时序同时解决频率(软分)+面积(硬限)。
+- **已 push E-split（提交 `9199ccb`）**：把 exp_w 那拍劈成 4 级流水 `E1|E2|X|A`，算术**逐位不变**、
+  flash_core/TB 不改、II=1、cycles 109414→109446。**本地全绿**（单元 TB + 全规模 S=256 改前/改后逐字节相同）。
+  → **下一步：在 EDA 服务器跑第三次 5ns**（`./synth/run_genus.sh`，medium），判读见 `synth/SYNTHESIS_STATUS.md`。
+- 最新进度/判读口径/兜底阶梯**以 `synth/SYNTHESIS_STATUS.md` 为准**（每次综合后回填）。
 
 ## 分支布局（2026-06 重命名后，共 5 个）
 | 分支 | 角色 |
@@ -33,8 +43,9 @@ cat synth/reports_ispatial_5.000ns/10_qor.rpt   # 看 Slack / Violating Paths(=0
 ./synth/run_sweep.sh 8 6 5    # 扫频找 fmax
 ```
 - **只有 `genus_ispatial.tcl` 一个综合脚本**（冗余的 `genus.tcl` 已删）。
-- TUI-234 根因与修复：见 `docs/genus_synthesis_troubleshooting.md`。预估 5ns 的新瓶颈在
-  `softmax_combine` S_MAC 的 exp×MAC 串联乘法——若违例，给 `w_cur`/`mulP` 加一级流水（II 仍=1）。
+- TUI-234 根因与修复：见 `docs/genus_synthesis_troubleshooting.md`。
+- 5ns 瓶颈是 `softmax_combine` 的 exp 链：第一次综合是单拍 exp×MAC（已流水成 E|X|A，`b56628d`），
+  第二次综合关键路径只剩 exp_w 那拍（已再劈成 E1|E2，`9199ccb`，本地逐位验证通过，待第三次综合确认）。
 
 ## 仿真验证（本机 WSL，iverilog）
 ```bash
