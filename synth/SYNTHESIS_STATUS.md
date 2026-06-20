@@ -1,68 +1,72 @@
-# 综合状态：第二次 5ns 已跑（流水化生效），待 E-split 再冲 clean
+# 综合状态：第三次 5ns 时序已闭合，面积差一步；已切 BQ=6 待第四次综合
 
-> 分支 `baseline-v2-synthopt`。进度：(1) 修复 Genus TUI-234；(2) 把 `softmax_combine` 单拍
-> `exp→乘→加` 重写成 3 级流水（`b56628d`）；(3) **2026-06-19 跑了第二次 5ns**——时序/面积大幅
-> 改善但**两项硬指标仍差一步**；(4) 正在做 `exp_w` E-split（E1|E2）再冲 clean。
+> 分支 `baseline-v2-synthopt`。进度：(1) 修 Genus TUI-234；(2) `softmax_combine` 流水化 3 级（`b56628d`）；
+> (3) `exp_w` E-split 4 级（`9199ccb`）；(4) **2026-06-20 第三次 5ns：时序第一次闭合（0 违例 +1ps），
+> 但面积仍超 7.2%**；(5) **已切 `BQ 16→6`（本提交）砍 flash_core 寄存器阵列，本地已验 bit-exact + cycles<300k，待第四次综合**。
 
-## 三方对比（同口径）
+## 四方对比（同口径）
 
-| 指标 | 第一次 `699bff9`（单拍，FAILED） | **第二次 `b56628d`（3 级流水）** | 赛题要求 | `8nsclean`(v2work) |
-|---|---|---|---|---|
-| Worst slack @5ns | −4967 ps | **−602.7 ps** | ≥0（软分） | +1.7 ps @8ns |
-| Violating Paths | 5650 | **638** | **=0** | 0 |
-| Total Cell Area | 11.18M µm²（233 万门，超 16.5%） | **10.19M µm²（212.5 万门，超 6.3%）** | **≤9.59M（200 万门）** | 7.84M（163.5 万门，81.8%） |
-| Cycles | 109,414 | 109,414 | **<300k** | — |
-| Total Power | — | 3.975 W | — | — |
+| 指标 | 一次 `699bff9`(单拍) | 二次 `b56628d`(3级) | **三次 `9199ccb`(E-split)** | 赛题要求 | `8nsclean`(v2work) |
+|---|---|---|---|---|---|
+| Worst slack @5ns | −4967 ps | −602.7 ps | **+1 ps（MET）** | ≥0（软分） | +1.7 ps @8ns |
+| Violating Paths | 5650 | 638 | **0 ✅** | **=0** | 0 |
+| Total Cell Area | 11.18M（超16.5%） | 10.19M（超6.3%） | **10.285M（≈214.5万门，超 7.2%）❌** | **≤9.59M（200万门）** | 7.84M（81.8%） |
+| Cycles（causal） | 109,414 | 109,414 | **109,446** | **<300k** | — |
+| Total Power | — | 3.975 W | **3.935 W** | — | — |
 
 报告归档：
-- 第二次（本次）：`synth/reports_ispatial_5.000ns_b56628d_PIPELINED/`（含原始 tar + provenance README）
-- 第一次（FAILED）：`synth/reports_ispatial_5.000ns_FAILED_699bff9/`
-- 详细分析：`docs/synth_5ns_analysis_2026-06-19.md`
+- **第三次（最新）**：`synth/reports_ispatial_5.000ns_9199ccb_ESPLIT/`（原始 tar + 8 .rpt + README）；分析 `docs/synth_5ns_analysis_2026-06-20.md`
+- 第二次：`synth/reports_ispatial_5.000ns_b56628d_PIPELINED/`；第一次 FAILED：`synth/reports_ispatial_5.000ns_FAILED_699bff9/`
 
-## 瓶颈：关键路径整条在 `exp_w` 那一拍（E 级）
+## 时序已收敛（E-split 生效）
 
-`30_timing.rpt` Path 1（slack −602.7 ps，data 5584 ps）：
-`m_tile_q_reg[30]` →（`score−m_tile` 减法）→ `exp_w` 64 项 LUT 译码 → 插值乘 `csa_tree_exp_w_247_25` → `s1_w_reg[15]`。
-即第一次的单拍 9780ps 链已被切成 E|X|A 三级，**现在只剩 `exp_w` 单函数本身就 5584ps**，需再劈一刀。
+关键路径从 `exp_w`（5584ps）转移到 `u_combine/m_tile_q` 的 16 路 max 比较链，**MET +1ps**，无需再补流水。
+**时序这条线到此为止**——剩下纯粹是面积问题。
 
-## 面积超标 = 时序虚胖（硬证据）
+## ⚠️ 两点关键更正（被第三次实测推翻/排除）
 
-不在关键路径上的 DMA/AXI（各分支同一份 RTL）：失败 5ns 时 **3.35M µm²**，v2work 8ns **clean 时仅 1.76M**。
-闭合时序后 `syn_opt` 面积回收：`10.19M − (3.35M−1.76M) ≈ 8.60M ≈ 179 万门`（达标，余 ~21 万门）。
-→ **闭合时序同时解决软分(频率)与硬限(面积)。**
+1. **「面积超标=时序虚胖、闭合后回收到 ~8.6M」被证伪。** 第三次 0 违例（+1ps clean）下，非核心
+   DMA/AXI 仍 **3.35M**（未回落到 8ns 时的 1.76M），总面积不降反微升 10.19M→10.285M。
+   那 1.59M 是**这套 DMA/AXI 在 5ns 下的真实代价**（每条 reg-to-reg 都得满足 5ns→普遍升驱动），
+   **与违例数无关，不会随时序闭合自愈**。要拿回只能放钟或从结构减寄存器。
+2. **`DOT_LANES 32→16` 是死参数。** flash_core 实际点积引擎是 `dot_stream`（`flash_core.sv:153`，无
+   `DOT_LANES`，恒满 64 路树）；吃 `DOT_LANES` 的 `dot_product_engine`（及 `online_softmax_engine`/
+   `value_accumulator`）**全树无实例**，是 `filelist.f` 死代码，综合面积贡献 0。改它对面积零影响，已排除。
 
-## 已实现并本地验证：`exp_w` E-split（4 级流水 E1|E2|X|A）
+## 面积分解（第三次 `20_area.rpt`，Cell-Area）
 
-把关键路径那拍 `exp_w` 再劈一刀（`softmax_combine.sv`，本提交）：
-- **E1**：选 delta（MAC/OLD/NEW）+ `m_new=max` + `abs` + LUT 索引 + 读 `y0/y1` → `p1` 寄存；
-  **E2**：`exp_finish` 做插值乘 `y_diff*rem` + 拼权重 → `s1_w`。`exp_finish(exp_prep(d)) ≡ exp_w(d)` 逐位。
-- 纯前馈锥，算术**逐位不变**、端口/`vreq` 协议不变（**flash_core/TB 不改**）、II=1；仅每个 drain 组多 1 拍。
-- 综合 effort **仍 medium**，retiming 保持开。
+| 区块 | Cell-Area | 占比 | 可削减性（保 5ns） |
+|---|---|---|---|
+| `u_combine`(softmax_combine) | 2.15M | 21% | 低（64 路乘法已单份时分复用 + 在关键路径上） |
+| flash_core 其余（`dot_stream`+大寄存器阵列+控制+norm） | 4.76M | 46% | **中：`BQ` 撑起的 `acc_block`/`q_block` 是最大可削项** |
+| 非核心（DMA+AXI写+glue） | 3.35M | 33% | 零（5ns 下 RTL 动不了） |
 
-**本地验证（全绿，2026-06-19）**：
-| 测试 | 结果 |
-|---|---|
-| 单元 TB `tb_softmax_combine` | MAE=0.000672 / MaxE=0.001272（与改前**完全一致**） |
-| medium S=32（改前 GOLD vs 改后） | 输出**逐字节相同**（`cmp` IDENTICAL） |
-| **全规模 S=256 causal（改前 GOLD vs 改后）** | 输出**逐字节相同**，md5 `01697fe8…`；TB PASS |
-| Cycles（S=256） | 109,414 → **109,446**（+32，占 300k 的 36.5%） |
+## 已实施并本地验证：`BQ 16→6`（本提交）
 
-> 复用脚本：`sim/run_fullsize_vectors.sh <label>`（全规模 vs golden + 改前/改后 md5）、
-> `sim/run_smoke_mirror.sh`（small+medium，不被 small 的镜像 1-LSB 伪差中断）。
-> 注：small/medium 对 Python 定点镜像有 1-LSB 伪差（改前 GOLD 也有，小配置舍入角，非 bug）；
-> 全规模 S=256 下 RTL 与镜像 max_abs_int=**0**，vs FP32 golden MaxE=0.0547<0.10、MAE=0.000097<0.03（合规）。
+`BQ`（query block 行数）撑起 flash_core 两个最大寄存器阵列 `acc_block[BQ][64][36b]`、`q_block[BQ][64][16b]`。
+`BQ 16→6` 砍掉约 3.4 万触发器 + 相关 BQ:1 读写 mux，**估省 ~1.3M → 面积约 8.95M（余 ~0.64M）**。
+改动点：`rtl/top/flash_attn_top.sv:12`（synth `elaborate` 用顶层默认，tcl 不覆盖参数）+ 全规模验证脚本 `-P BQ` 同步。
 
-## 预期与判读（下一次 5ns 综合）
+**为什么是 6**（本机全规模 S=256 causal 实测，bit-exact md5 全部 == BQ16 基准 `01697fe8`）：
 
-- E1≈2.95ns（含 m_new 的 16 路 max 前缀）、E2≈2.6ns，均 < 4.79ns required（~1.8ns 裕量）→ 预期 5ns clean。
-- 面积：闭合时序后非核心 DMA/AXI 由 3.35M 回落 ~1.76M → 总 ≈8.6M ≈179 万门（达标，余 ~21 万门）。
+| BQ | cycles（causal，准确） | <300k? | bit-exact | 估面积 |
+|---|---|---|---|---|
+| 16（改前） | 109,446 | ✅ | 基准 | 10.285M ❌ |
+| 8 | 196,060 | ✅ +104k | ✅ | ~9.2M |
+| **6（选定）** | **259,791** | ✅ **+40k（13%）** | ✅ | **~8.95M（最稳）** |
+| 5（外推） | ~323k | ❌ 爆 | — | — |
+| 4 | ~420k | ❌ 爆 | — | ~8.7M |
 
-## 复现综合 / 判读
+> `BQ=6` 是**满足 cycles<300k 的最小 BQ**；cycles 是准确测量值（非综合变量），唯一由综合决定的是面积，
+> 故最小可行 BQ = 面积最稳的单次赌注。正确性：每个 query 行注意力独立，`BQ` 只改 K/V tile 复用度，**不改数学**。
+> 评分 cycles 口径 = **causal** S=256/d=64（需求文档 §延迟，line 72）；非 causal 无 cycles 预算，故 causal 数即准。
+
+## 复现综合 / 判读（第四次 5ns）
 ```bash
-./synth/run_genus.sh          # 默认 5.000ns（effort=medium，retiming on）
+./synth/run_genus.sh          # 默认 5.000ns（effort=medium，retiming on），用 BQ=6 顶层默认
 cat synth/reports_ispatial_5.000ns/10_qor.rpt   # Violating Paths==0 且 Total Cell Area ≤ 9,590,400 µm² 即两项达标
 ```
-- 若仍少量违例：给 `m_tile_q<=max_comb` 的 16 路 max 补一级流水后重跑。
-- 若干净但面积 >9.59M：`CLK_PERIOD_NS=6.0 ./synth/run_genus.sh`，选**既干净又 ≤9.59M 的最快周期**（频率软评分）。
-- 真·结构换面积（cycles 还有 63% 可烧）：`dot_stream` `DOT_LANES 32→16`；或 combine 的 64 路乘法时分复用。
-- 综合完成后用真实 `reports_ispatial_<period>ns/` 回填本文件与 `docs/synth_5ns_analysis_2026-06-19.md`。
+- **预期**：时序仍 clean（`u_combine` 关键路径与 BQ 无关，寄存器更少→拥塞更低）；面积 ~8.95M ≤ 9.59M。
+- **若面积仍 >9.59M**（估偏乐观）：退 `BQ=8` 已无用（面积更大），直接 `CLK_PERIOD_NS=6.0`（非核心 1.59M 虚胖回落，几乎必过，仅损频率软分）。
+- **若意外回到违例**：基本不会（BQ 不碰关键路径）；真出现则查 `acc_block` 读写 mux 是否成新瓶颈。
+- 综合完成后用真实 `reports_ispatial_5.000ns/` 回填本文件 + `docs/synth_5ns_analysis_2026-06-20.md`，并归档报告（带 commit 对应）。

@@ -4,17 +4,20 @@ Repository: `404mario/project2-flashattention-ip` — 课程 Project 2 FlashAtte
 
 ## 现在在哪（一句话）
 v2 流式架构（II=1 `dot_stream` + `softmax_combine`）已 **bit-exact 验证通过**，已**修好 Genus
-TUI-234**。当前阶段：在 Cadence Genus 上**冲 5ns clean**。功能/精度/cycles 不再动。
+TUI-234**。**5ns 时序已闭合（第三次综合 +1ps/0 违例）**；当前阶段：**冲面积达标**——已切 `BQ=6`，待第四次综合。
 
-## 5ns 进度（2026-06-19，读这里先了解现状）
-- **第二次 5ns 综合已完成**（RTL `b56628d`）：slack **−602.7ps**、违例 **638**、cell area **10.19M µm²
-  （212.5 万门，超 200 万限 6.3%）**、cycles 109414。比第一次(−4967/5650/11.18M)大幅改善但**两项硬指标仍差一步**。
-  报告归档 `synth/reports_ispatial_5.000ns_b56628d_PIPELINED/`，分析 `docs/synth_5ns_analysis_2026-06-19.md`。
-- 关键路径整条在 `u_combine` 的 **exp_w 那一拍**；**面积超标几乎全是时序虚胖**（不在关键路径的
-  DMA/AXI 失败时 3.35M，8ns-clean 时仅 1.76M）→ 闭合时序同时解决频率(软分)+面积(硬限)。
-- **已 push E-split（提交 `9199ccb`）**：把 exp_w 那拍劈成 4 级流水 `E1|E2|X|A`，算术**逐位不变**、
-  flash_core/TB 不改、II=1、cycles 109414→109446。**本地全绿**（单元 TB + 全规模 S=256 改前/改后逐字节相同）。
-  → **下一步：在 EDA 服务器跑第三次 5ns**（`./synth/run_genus.sh`，medium），判读见 `synth/SYNTHESIS_STATUS.md`。
+## 5ns 进度（2026-06-20，读这里先了解现状）
+- **第三次 5ns 综合已完成**（RTL `9199ccb` E-split）：**时序第一次闭合——slack +1ps、违例 0**；但
+  cell area **10.285M µm²（≈214.5 万门，超 200 万限 7.2%）**，cycles 109446。**时序达标、面积差一步**。
+  报告归档 `synth/reports_ispatial_5.000ns_9199ccb_ESPLIT/`，分析 `docs/synth_5ns_analysis_2026-06-20.md`。
+- **两点关键更正（被第三次实测推翻/排除）**：
+  (1)「面积超标=时序虚胖、闭合后回收到 ~8.6M」**被证伪**——0 违例下非核心 DMA/AXI 仍 3.35M（未回落 1.76M），
+  面积不降反微升，那 1.59M 是 5ns 真实代价、不会自愈；
+  (2) `DOT_LANES 32→16` 是**死参数**（flash_core 用 `dot_stream` 无 `DOT_LANES`；`dot_product_engine` 全树无实例），改它对面积零影响。
+- **已切 `BQ 16→6`（本提交，`rtl/top/flash_attn_top.sv:12`）**：砍 `acc_block`/`q_block` 寄存器阵列约 3.4 万触发器，
+  估省 ~1.3M → 面积约 8.95M。**本地全绿**：单元 TB MAE 不变；全规模 S=256 causal **bit-exact（md5 `01697fe8`==BQ16 基准）**、
+  **cycles 259,791 < 300k**。BQ=6 是满足 cycles<300k 的最小 BQ（BQ=4/5 爆周期）。
+  → **下一步：在 EDA 服务器跑第四次 5ns**（`./synth/run_genus.sh`，medium，用 BQ=6 顶层默认），判读见 `synth/SYNTHESIS_STATUS.md`。
 - 最新进度/判读口径/兜底阶梯**以 `synth/SYNTHESIS_STATUS.md` 为准**（每次综合后回填）。
 
 ## 分支布局（2026-06 重命名后，共 5 个）

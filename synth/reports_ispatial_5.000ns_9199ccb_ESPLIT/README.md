@@ -80,16 +80,26 @@ DMA/AXI 因全局违例被「追时序」普涨到 ~2 倍，一旦 0 违例 `syn
 （连同 `online_softmax_engine`/`value_accumulator`）在 active 设计里**没有任何实例**，是 `filelist.f`
 里的死代码，Genus 读入后丢弃、面积贡献为 0。**故改 `DOT_LANES` 对综合后面积零影响。**
 
-## 下一步：保 5ns，`BQ 16→4` 砍 flash_core 寄存器阵列
+## 下一步：保 5ns，`BQ 16→6`（本机全规模实测后选定）
 
 `BQ`（query block 行数）撑起 flash_core 两个最大寄存器阵列：`acc_block[BQ][64][36b]` + `q_block[BQ][64][16b]`。
-`BQ 16→4` 直接砍掉约 4 万个触发器（含相关读写 mux），**估计省 1.4–1.8M**，落到 ~8.8M（余量约 0.8M）。
-- **正确性**：每个 query 行的注意力彼此独立，`BQ` 仅改 K/V tile 的复用/重载调度与行状态寄存器数，**不改数学 → 应 bit-exact**。
-- **时序**：`u_combine`（关键路径所在）与 `BQ` 无关，且寄存器更少→拥塞更低，5ns 应仍闭合。
-- **代价**：K/V 重载变多 → cycles 上升（本机全规模实测，须 < 300k）。
-- 改动点仅 `rtl/top/flash_attn_top.sv:12`（`elaborate` 用顶层默认，tcl 不覆盖参数）。
+`BQ` 越小越省面积，但 K/V tile 重载随 q-block 数（S/BQ）增加 → cycles 越大。**本机全规模 S=256 causal 实测**
+（bit-exact md5 全部 == BQ16 基准 `01697fe8`）定出可行域：
+
+| BQ | cycles（causal，准确） | <300k? | 估面积 | 结论 |
+|---|---|---|---|---|
+| 16（改前） | 109,446 | ✅ | 10.285M | 面积超 7.2% |
+| 8 | 196,060 | ✅ +104k | ~9.2M | 可行但面积更贴线 |
+| **6（选定）** | **259,791** | ✅ **+40k** | **~8.95M** | **最稳** |
+| 5（外推） | ~323k | ❌ 爆 | — | 出局 |
+| 4 | ~420k | ❌ 爆 | ~8.7M | 出局（cycles） |
+
+cycles 是准确测量值、非综合变量，唯一由 11h 综合决定的是面积 → 取**满足 cycles<300k 的最小 BQ = 6**，面积最稳。
+正确性：query 行注意力独立，`BQ` 只改 K/V 复用度，**不改数学**，全规模 bit-exact 已证。
+改动点：`rtl/top/flash_attn_top.sv:12`（synth `elaborate` 用顶层默认）+ 全规模验证脚本 `-P BQ` 同步为 6。
+（说明：本 README 随 run-3 归档提交 `f11c318`；`BQ 16→6` 决策于其后定稿，本段为后续更新。）
 
 ## 判读口径（重跑后看 `synth/reports_ispatial_5.000ns/10_qor.rpt`）
 
 **`Violating Paths == 0` 且 `Total Cell Area ≤ 9,590,400 µm²`（=200 万门 × 4.7952）即两项达标。**
-本次时序已达标、仅面积差一步。若 `BQ=4` 后面积仍 >9.59M：兜底 `CLK_PERIOD_NS=6.0`（6ns 干净几乎必过，仅损频率软分）。
+本次时序已达标、仅面积差一步。若 `BQ=6` 后面积仍 >9.59M：兜底 `CLK_PERIOD_NS=6.0`（6ns 干净几乎必过，仅损频率软分）。

@@ -30,7 +30,7 @@ iverilog -g2012 -Wall -I "$ROOT/tb/sv" -s tb_flash_attn_top_e2e_smoke \
     -P tb_flash_attn_top_e2e_smoke.S_LEN=256 \
     -P tb_flash_attn_top_e2e_smoke.D_MODEL=64 \
     -P tb_flash_attn_top_e2e_smoke.BK=16 \
-    -P tb_flash_attn_top_e2e_smoke.BQ=16 \
+    -P tb_flash_attn_top_e2e_smoke.BQ=6 \
     -P tb_flash_attn_top_e2e_smoke.SOFTMAX_FRAC=16 \
     -P tb_flash_attn_top_e2e_smoke.SCALE_Q8_8=32 \
     -P tb_flash_attn_top_e2e_smoke.CHECK_BITEXACT=0 \
