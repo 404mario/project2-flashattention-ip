@@ -39,4 +39,7 @@ innovus.log*
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
-!.vscode/settings.jsonsim_build_mod/
+!.vscode/settings.json
+
+# Sim build artifacts (iverilog/vvp outputs)
+sim_build_mod/

@@ -25,6 +25,11 @@
 
 ## 0. 关键文档（评分口径 / 综合排错）
 
+- 🚀 **[Ceiling-Push 改动证据（commit `f586c52`，本次）](reports/ceiling_push_evidence.md)** — 在已闭合
+  5ns 时序的 v2 上做两处 **bit-exact** 结构改动以提升上限：(1) `softmax_combine` 的 16 路 tile-max
+  由 **15 级线性比较链 → 深度 4 平衡树**（缩短 +1ps 的 binding 关键路径，释放时序余量）；
+  (2) **`ACC_W 36→34`**（实测下限，−2bit 省面积）。两者全规模仿真 **md5 == `01697fe8` 逐字节一致**，
+  **cycles/精度不变**；同工作点（BQ6/5ns）对旧 v2 **严格占优**。综合默认现为 BQ6+ACC34+max树。
 - 📋 **[Project 2 官方要求](docs/project2_requirements.md)** — 摘自课程《Project 2 补充说明》
   PDF（FlashAttention 赛题），基本要求 75% + 附加要求 25% 的权威评分口径、必需寄存器表、
   正确性验收阈值（MAE≤0.03 / MaxE≤0.10）、ASIC 后端指标（面积 ≤200 万门、延迟 <300k cycles）。
