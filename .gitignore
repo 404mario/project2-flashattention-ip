@@ -39,4 +39,4 @@ innovus.log*
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
-!.vscode/settings.json
+!.vscode/settings.jsonsim_build_mod/

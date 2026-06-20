@@ -256,13 +256,29 @@ module softmax_combine #(
     logic [L_W-1:0]          l_state_q;
     logic signed [ACC_W-1:0] acc_state_q [0:D_MODEL-1];
 
-    // combinational tile-max over valid scores (UNCHANGED)
+    // combinational tile-max over valid scores -- balanced reduction TREE.
+    // Was a 15-deep *linear* compare chain (max_comb=score[0]; for i: if score[i]>
+    // max_comb ...), which synthesised to the binding 5ns path (cons_buf_q ->
+    // 16-way max -> m_tile_q, +1ps). max() is associative+commutative, so an
+    // explicit binary tree (implicit-heap layout) gives the BIT-IDENTICAL result
+    // at ceil(log2(BK))=4 logic levels instead of 15 -- pure timing win, no math
+    // change. Lanes >= tile_len are masked to the most-negative ACC_W value so
+    // they can never win the max, exactly reproducing the old (mi<tile_len) guard
+    // (real scores are scaled dot products, magnitude << 2^(ACC_W-1), so the
+    // sentinel is unambiguously below every valid score). Assumes BK is a power
+    // of two (BK=16 here); the heap recurrence node[m]=max(node[2m],node[2m+1])
+    // is evaluated high-index-first so children are ready before their parent.
+    localparam logic signed [ACC_W-1:0] SCORE_NEG_INF = {1'b1, {(ACC_W-1){1'b0}}};
+    logic signed [ACC_W-1:0] max_tree [0:2*BK-1];
     logic signed [ACC_W-1:0] max_comb;
-    int mi;
+    int mt;
     always_comb begin
-        max_comb = score_in[0];
-        for (mi = 1; mi < BK; mi = mi + 1)
-            if ((mi < tile_len) && (score_in[mi] > max_comb)) max_comb = score_in[mi];
+        for (mt = 0; mt < BK; mt = mt + 1)
+            max_tree[BK + mt] = (mt < tile_len) ? score_in[mt] : SCORE_NEG_INF;
+        for (mt = BK - 1; mt >= 1; mt = mt - 1)
+            max_tree[mt] = (max_tree[2*mt] > max_tree[2*mt + 1]) ? max_tree[2*mt]
+                                                                 : max_tree[2*mt + 1];
+        max_comb = max_tree[1];
     end
 
     // current-key weight delta is (score_cur_in - m_tile_q); the weight itself is
