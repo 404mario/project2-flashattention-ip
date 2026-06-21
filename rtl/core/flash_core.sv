@@ -21,7 +21,13 @@ module flash_core #(
     parameter int USE_CAUSAL_SKIP = 0,
     parameter int SOFTMAX_FRAC    = FRAC_W,
     parameter int STATIC_SCALE_MODE = 0,
-    parameter int STATIC_SCALE_Q8_8 = 32
+    parameter int STATIC_SCALE_Q8_8 = 32,
+    parameter int ENABLE_DROPOUT    = 1,
+    // Bonus #7 (complete): FA-3-style per-block INT8 block quantization for the
+    // QK^T dot. 0 (default) = use the full-precision streaming dot (dot_stream);
+    // default path & timing then bit-identical/untouched. 1 = each q/k vector is
+    // int8 block-quantized (per-vector scale) before the dot.
+    parameter int BLOCK_QUANT_MODE  = 0
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -32,6 +38,13 @@ module flash_core #(
     input  logic causal_en,
     input  logic signed [31:0] neg_large,
     input  logic signed [31:0] scale,
+    // ---- bonus controls ----
+    input  logic [31:0] valid_len,            // padding mask: keys with global idx >= valid_len are invalid
+    input  logic [31:0] window_len,           // ORIGINAL bonus: sliding-window (local) attention; 0/>=S = full causal
+    input  logic        dropout_en,
+    input  logic [15:0] dropout_threshold,
+    input  logic [15:0] dropout_seed,
+    input  logic [15:0] dropout_scale_q8_8,   // kept for register compat; cancels in normalized acc/l
     output logic q_req_valid,
     output logic [$clog2(S_LEN)-1:0] q_req_row,
     input  logic q_req_ready,
@@ -97,17 +110,70 @@ module flash_core #(
         int rem; begin rem = S_LEN - s; calc_kv_len = (rem > BK) ? BK[LEN_W-1:0] : rem[LEN_W-1:0]; end
     endfunction
 
-    // causal-valid key count for a given block row in the current tile
+    // valid_len padding mask (Bonus 4): keys with global index >= valid_len are
+    // invalid. Clamp to S_LEN so the default (valid_len=S_LEN) is a no-op.
+    localparam logic [ROW_W:0] S_LEN_WIDE = S_LEN;
+    logic [ROW_W:0] valid_len_clamped;
+    assign valid_len_clamped = (valid_len > S_LEN) ? S_LEN_WIDE : valid_len[ROW_W:0];
+
+    // ORIGINAL BONUS: sliding-window / local attention (Longformer/Mistral style).
+    // Query qrow attends only to keys in [qrow-window+1, qrow]. window_len 0 or >=S
+    // disables it (= full causal, default -> no perf or output change).
+    logic [ROW_W:0] window_clamped;
+    assign window_clamped = (window_len == 0 || window_len >= S_LEN) ? S_LEN_WIDE : window_len[ROW_W:0];
+    function automatic logic [ROW_W:0] window_lo(input logic [ROW_W-1:0] qrow);
+        begin
+            if (({1'b0, qrow} + 1'b1) > window_clamped) window_lo = ({1'b0, qrow} + 1'b1) - window_clamped;
+            else                                        window_lo = '0;
+        end
+    endfunction
+
+    // valid key count for (block row r, current tile): causal upper bound AND padding.
+    // A key with tile-local index j (global = kv_start+j) is valid iff
+    //   global < valid_len  AND  (causal ? global <= qrow : true).
     function automatic logic [LEN_W-1:0] valid_cnt_for(input logic [BQ_IDX_W-1:0] r);
-        logic [ROW_W-1:0] qrow; logic [ROW_W:0] cnt;
+        logic [ROW_W-1:0] qrow; logic [ROW_W:0] cnt; logic [ROW_W:0] pad_cnt;
         begin
             qrow = q_block_start_q + r;
-            if (!causal_en) valid_cnt_for = kv_len_q;
-            else if (kv_start_q > qrow) valid_cnt_for = '0;
-            else begin
-                cnt = ({1'b0, qrow} - {1'b0, kv_start_q}) + 1'b1;
-                valid_cnt_for = (cnt > kv_len_q) ? kv_len_q : cnt[LEN_W-1:0];
+            if (qrow >= valid_len_clamped) begin
+                valid_cnt_for = '0;                       // invalid (padding) query row -> no output
+            end else begin
+                if (!causal_en) cnt = {1'b0, kv_len_q};
+                else if (kv_start_q > qrow) cnt = '0;
+                else cnt = (({1'b0, qrow} - {1'b0, kv_start_q}) + 1'b1);
+                if (cnt > {1'b0, kv_len_q}) cnt = {1'b0, kv_len_q};
+                // padding cap: keys before valid_len only
+                if (kv_start_q >= valid_len_clamped) pad_cnt = '0;
+                else pad_cnt = valid_len_clamped - {1'b0, kv_start_q};
+                if (cnt > pad_cnt) cnt = pad_cnt;
+                // sliding window: skip the whole tile if its last fed key is below
+                // the window low bound (out-of-window keys inside a kept tile are
+                // masked at score capture). Saves cycles in windowed mode.
+                if ((cnt != 0) && (({1'b0, kv_start_q} + cnt - 1'b1) < window_lo(qrow))) cnt = '0;
+                valid_cnt_for = cnt[LEN_W-1:0];
             end
+        end
+    endfunction
+
+    // Dropout (Bonus 6): deterministic per-(query,key) hash; same RNG as the
+    // baseline bonus core so drop decisions match. A dropped key's score is set
+    // to the most-negative value so its softmax weight is exactly 0 (excluded
+    // from l and acc). The keep-scale (dropout_scale_q8_8) cancels in the
+    // normalized output acc/l, so it is intentionally not applied here.
+    localparam logic signed [ACC_W-1:0] SCORE_NEG = {1'b1, {(ACC_W-1){1'b0}}};
+    function automatic logic [15:0] dropout_rand16(
+        input logic [ROW_W-1:0] query_index, input logic [ROW_W-1:0] key_index, input logic [15:0] seed);
+        logic [31:0] x;
+        begin
+            x = {seed, seed ^ 16'hace1};
+            x = x ^ ({16'd0, query_index} << 5);
+            x = x ^ ({16'd0, query_index} << 13);
+            x = x ^ ({16'd0, key_index} << 3);
+            x = x ^ ({16'd0, key_index} << 17);
+            x = x ^ (x << 7);
+            x = x ^ (x >> 9);
+            x = x ^ (x << 8);
+            dropout_rand16 = x[15:0] ^ x[31:16];
         end
     endfunction
 
@@ -144,16 +210,60 @@ module flash_core #(
     logic signed [DATA_W-1:0] dot_k_vec [0:D_MODEL-1];
     logic                     dot_out_valid;
     logic signed [ACC_W-1:0]  dot_value;
+    // Guarded key index: feed_idx_q can momentarily equal prod_vcnt_q (when the
+    // feed has finished but the FSM hasn't advanced). dot_in_valid is low then, so
+    // the value is unused, but clamp the index to keep it in [0,BK-1] and avoid any
+    // out-of-bounds read of k_tile.
+    logic [LEN_W-1:0] feed_idx_safe;
+    assign feed_idx_safe = (feed_idx_q < BK) ? feed_idx_q : (BK[LEN_W-1:0] - 1'b1);
     int dv;
     always_comb for (dv = 0; dv < D_MODEL; dv = dv + 1) begin
         dot_q_vec[dv] = q_block[prod_row_q][dv];
-        dot_k_vec[dv] = k_tile[feed_idx_q][dv];
+        dot_k_vec[dv] = (dot_in_valid) ? k_tile[feed_idx_safe][dv] : '0;  // feed 0 when not valid
     end
     assign dot_in_valid = (pstate_q == PS_FEED) && (feed_idx_q < prod_vcnt_q);
+    logic signed [ACC_W-1:0] dot_value_fp;       // full-precision streaming dot
     dot_stream #(.D_MODEL(D_MODEL), .DATA_W(DATA_W), .ACC_W(ACC_W)) u_dot (
         .clk(clk), .rst_n(rst_n), .in_valid(dot_in_valid),
-        .q_vec(dot_q_vec), .k_vec(dot_k_vec), .out_valid(dot_out_valid), .dot(dot_value)
+        .q_vec(dot_q_vec), .k_vec(dot_k_vec), .out_valid(dot_out_valid), .dot(dot_value_fp)
     );
+
+    // ---- Bonus #7 (complete): FA-3 per-block INT8 block-quant dot path ----
+    // Combinational block_quant_dot on the same fed vectors, delayed by the SAME
+    // latency as dot_stream so it aligns with dot_out_valid. Selected only when
+    // BLOCK_QUANT_MODE!=0; otherwise dot_value == dot_value_fp (default untouched).
+    function automatic int dot_latency(input int dmodel);
+        int leaves, lv;
+        begin leaves=1; while(leaves<dmodel) leaves=leaves<<1;
+              lv=0; while((1<<lv)<leaves) lv=lv+1; dot_latency=lv+1; end
+    endfunction
+    localparam int BQ_LAT = dot_latency(D_MODEL);
+    logic [D_MODEL*DATA_W-1:0] bq_q_flat, bq_k_flat;
+    int bqi;
+    always_comb for (bqi=0; bqi<D_MODEL; bqi=bqi+1) begin
+        bq_q_flat[bqi*DATA_W +: DATA_W] = dot_q_vec[bqi];
+        bq_k_flat[bqi*DATA_W +: DATA_W] = dot_k_vec[bqi];
+    end
+    logic signed [ACC_W-1:0] bq_dot_comb;
+    generate
+        if (BLOCK_QUANT_MODE != 0) begin : g_bq
+            block_quant_dot #(.D_MODEL(D_MODEL), .DATA_W(DATA_W), .ACC_W(ACC_W)) u_bqdot (
+                .q_flat(bq_q_flat), .k_flat(bq_k_flat), .dot(bq_dot_comb));
+            logic signed [ACC_W-1:0] bq_pipe [0:BQ_LAT-1];
+            integer bp;
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) for (bp=0;bp<BQ_LAT;bp=bp+1) bq_pipe[bp] <= '0;
+                else begin
+                    bq_pipe[0] <= bq_dot_comb;
+                    for (bp=1;bp<BQ_LAT;bp=bp+1) bq_pipe[bp] <= bq_pipe[bp-1];
+                end
+            end
+            assign dot_value = bq_pipe[BQ_LAT-1];
+        end else begin : g_fp
+            assign bq_dot_comb = '0;
+            assign dot_value   = dot_value_fp;
+        end
+    endgenerate
 
     // scale dot -> score (frac = SOFTMAX_FRAC)
     logic signed [31:0] scale_mult, scale_start_value;
@@ -254,6 +364,9 @@ module flash_core #(
     end endgenerate
 
     // -------- debug aliases for the shared VERBOSE-gated testbench --------
+    // Simulation-only: wrapped in synthesis translate_off so Genus never sees them
+    // (cannot affect PPA / fanout). They only exist for the TB's VERBOSE probes.
+    // synthesis translate_off
     logic dot_done, score_valid;
     logic [ROW_W-1:0] current_q_row, current_key_index;
     logic signed [ACC_W-1:0] scaled_score, masked_score;
@@ -271,6 +384,7 @@ module flash_core #(
     always_comb for (dbg=0; dbg<D_MODEL; dbg=dbg+1) begin
         v_work_data[dbg]=v_tile[0][dbg]; acc_state_q[dbg]=acc_block[cons_row_q][dbg]; acc_next[dbg]=acc_block[cons_row_q][dbg];
     end
+    // synthesis translate_on
 
     always_comb begin
         busy  = (state_q != ST_IDLE) && (state_q != ST_DONE);
@@ -314,8 +428,20 @@ module flash_core #(
             end
 
             // ---- producer: capture streamed scores into prod_buf ----
+            // Dropout: the score emerging now belongs to key (kv_start+recv_idx)
+            // of query (q_block_start+prod_row). If dropped, store the most-negative
+            // score so its softmax weight is exactly 0 (excluded from l and acc).
             if (dot_out_valid && (pstate_q == PS_FEED)) begin
-                buf_score[prod_buf_q][recv_idx_q] <= scaled_score_comb;
+                if (// ORIGINAL bonus: mask keys below the sliding window
+                    (({1'b0, kv_start_q} + {{(ROW_W+1-LEN_W){1'b0}}, recv_idx_q}) < window_lo(q_block_start_q + prod_row_q)) ||
+                    // Bonus 6: dropout (forced most-negative -> softmax weight 0)
+                    ((ENABLE_DROPOUT != 0) && dropout_en &&
+                     (dropout_rand16(q_block_start_q + prod_row_q,
+                                     kv_start_q + {{(ROW_W-LEN_W){1'b0}}, recv_idx_q},
+                                     dropout_seed) < dropout_threshold)))
+                    buf_score[prod_buf_q][recv_idx_q] <= SCORE_NEG;
+                else
+                    buf_score[prod_buf_q][recv_idx_q] <= scaled_score_comb;
                 recv_idx_q <= recv_idx_q + 1'b1;
             end
 
