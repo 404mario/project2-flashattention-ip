@@ -114,14 +114,16 @@ check_timing > [file join $RPT_DIR 01_check_timing_pre_synth.rpt]
 if {[catch {set_db max_cpus_per_server 8} m]} { puts "WARN: max_cpus_per_server: $m" }
 if {[catch {set_db auto_super_thread   true} m]} { puts "WARN: auto_super_thread: $m" }
 
-# Effort settings. MEDIUM effort: now that softmax_combine is properly pipelined
-# (exp | multiply | accumulate split across registers), the 5 ns critical path is
-# feasible without the tool fighting it, so medium effort closes faster and avoids
-# the high-effort drive-up/clone area inflation. The genuine 8 ns baseline also
-# closed clean at medium. Bump back to high only if a medium run leaves small slack.
-set_db syn_generic_effort medium
-set_db syn_map_effort     medium
-set_db syn_opt_effort     medium
+# Effort settings. HIGH effort on the 4ns-dma-rdpipe branch (was MEDIUM on the 5 ns
+# baseline). Rationale: at 5 ns, medium closed clean and avoided high-effort
+# drive-up/clone area inflation. At 4.5 ns the RTL fixes (rd_beat_pipe + dot-split)
+# clear the two dominant walls but leave the norm/softmax cones ~470 ps short
+# (~10%) -- exactly the "medium leaves small slack -> bump to high" case noted here
+# originally. HIGH spends the ~18% area headroom to close that ~10% timing gap.
+# (For a 5 ns A/B on this branch, this stays high; flip to medium to match baseline.)
+set_db syn_generic_effort high
+set_db syn_map_effort     high
+set_db syn_opt_effort     high
 
 # Register retiming: allow Genus to rebalance the pipeline registers across the
 # dot_stream adder tree / combine datapath to hit a shorter period. Preserves
