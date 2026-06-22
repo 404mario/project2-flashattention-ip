@@ -36,6 +36,7 @@ fmt_case() {
 echo "######## Bonus #5: fixed-point format error/perf comparison (numpy FP32 golden) ########"
 # Q8.8 reference, Q6.10, Q4.12 — at S=32/D=16 (amplitude auto-matched per frac_w by build_inputs)
 fmt_case "Q8.8_s32"  16 8  16 64 32 16 8 8 800000 120000
+fmt_case "Q7.9_s32"  16 9  18 64 32 16 8 8 800000 120000
 fmt_case "Q6.10_s32" 16 10 20 64 32 16 8 8 800000 120000
 fmt_case "Q4.12_s32" 16 12 24 64 32 16 8 8 800000 120000
 echo "######## done ########"
