@@ -1,7 +1,36 @@
-# 4ns 攻坚 — DMA rd-beat 流水化交接说明（分支 `4ns-dma-rdpipe`）
+# 4.x ns 攻坚交接说明（分支 `4ns-dma-rdpipe`，HEAD `bd4934e`）
 
-> 目的：把冻结 5ns 核的关键路径切一刀，使时钟有望收敛到 4ns；不动 `baseline-v2-synthopt` 冻结 tag。
+> 目的：切掉冻结 5ns 核的关键路径，使时钟收敛到 **4.5ns（主目标）/ 4.0ns（上探）**；不动 `baseline-v2-synthopt` 冻结 tag、不动 `bonus-v2-5ns-core`。
 > 诚实边界：本地 iverilog 只证 **bit-exact + cycles**；真实 **面积 / Fmax 必须 Genus**。
+
+## 0. 当前分支状态 + 推荐综合配方（2026-06-22）
+
+**分支 `bd4934e` = 两个 bit-exact RTL 改动叠加**，均全规模 S=256 causal 验过 md5==`01697fe8`（== baseline 逐字节）：
+| 改动 | 文件 | 解决的墙 | cycles |
+|---|---|---|---|
+| rd_beat_pipe | `dma_controller.sv` | DMA 输入写 `m_axi_rvalid→v_buf2`（top-50 约 19 条） | +626 |
+| dot-split | `dot_stream.sv` | 点积锥 `feed_idx→k_mux→multiply`（top-50 约 21 条） | +3 |
+| **合计** | | **两道共限墙中的 40/50 条最差路径** | **260,420（+629，13.2% 余量到 300k）** |
+
+**⚠️ 诚实预期（决定要不要继续）**：这两改解的是**最大的两道墙**，但 Path 2..50 里还剩 **~5 条内部锥未动**：
+- `u_norm_s1_recip`（归一化倒数，4774ps，5ns +31ps）→ 4.5ns 约 **−469ps**
+- `u_combine s2_prod`（softmax 乘，4764ps，5ns +34ps）→ 4.5ns 约 **−466ps**
+- `s_axil_rdata`（AXI-lite 配置寄存器读，I/O 外部延迟约束）→ 非性能路径，**可用 SDC multicycle/放松 output_delay 消除**，不必动 RTL。
+
+所以 **4.5ns 不靠 RTL 改完就保证过**：残余 ~470ps（~10%）要靠 **high effort 综合**补；补不上则把 norm / softmax 两锥各做一次同样的操作数/级拆分（技术同 dot-split，我可继续做）。
+
+**推荐配方（按顺序）：**
+1. EDA 机 fetch 本分支：`git fetch origin 4ns-dma-rdpipe && git checkout 4ns-dma-rdpipe`。
+2. SDC 周期改 **4.500ns**（`input_delay` 维持 1500ps 同口径）。
+3. **`set_db syn_generic_effort high` / `syn_map_effort high` / `syn_opt_effort high`**（tcl 注释原话："bump back to high only if a medium run leaves small slack" —— 现在正是这个情形；high 拿 18% 面积裕度换 ~10% 时序）。
+4. `report_timing -max_paths 50 -nworst 1`：**预期点积锥 + DMA 路径已消失**。看残余：
+   - WNS ≥ 0 → **4.5ns 成立**（high effort 补上了 norm/softmax）。
+   - WNS ≈ −200~−470 且失败路径是 `u_norm_*` / `u_combine s2_prod` → 告诉我，我把这两锥也拆（本地可验 bit-exact）。
+   - WNS ≈ −470 且失败路径是 `s_axil_rdata` → SDC 放松那条 I/O 约束即可（配置读非关键）。
+5. **面积验收**：high effort 会推高面积，确认 `total_cell_area/4.7952` 仍 ≤ 9.59M（82.1% + 高 effort 膨胀，18% 裕度大概率扛得住）。
+6. 4.0ns 上探：同上但 norm/softmax 几乎必须各切一刀（4ns 缺口 ~990ps）。
+
+下面 §1-§7 是 rd_beat_pipe（第一道墙）的详细论证；dot-split（第二道墙）见 §8。
 
 ## 1. 为什么改这里（真 Genus 证据）
 
@@ -111,6 +140,18 @@ report_timing -slack_histogram                                   ;# 或直接看
 3. 退守 **5ns**（已冻结、两项全过）——Fmax 是软分，5ns 是无下行风险的保底。
 
 ## 7. 落地
-- 分支 `4ns-dma-rdpipe`（off `baseline-v2-synthopt` `e95c391`），commit `8791dbb`。
+- 分支 `4ns-dma-rdpipe`（off `baseline-v2-synthopt` `e95c391`），rd_beat_pipe=`8791dbb`，dot-split=`bd4934e`。
 - **不动** `baseline-v2-synthopt`（冻结提交核）、`bonus-v2-5ns-core`（bonus 分支）。
 - D: 备份 `4ns-dma-rdpipe.bundle`。
+
+## 8. dot-split（第二道墙，`dot_stream.sv`，commit `bd4934e`）
+
+**证据（Path 6 逐元件，冻结 .db）**：`feed_idx_q →[k_tile 16:1 行 mux + 长布线 ~1535ps]→ dot_k_vec →[16×16 乘法 ~2950ps]→ node_q[0]`，二者**塞在同一拍** = 4778ps，5ns +13ps。这是 top-50 里约 21 条的同构锥（点积树前端），是 4ns/4.5ns 的主导内部闸。
+
+**改法**：在 `dot_stream` 里新增一级**操作数寄存器** `q_op_q/k_op_q`——先寄存选出的 q/k 操作数，下一拍再乘。于是 k_tile mux（~1.5ns）与乘法（~2.95ns）落在**两拍**，点积锥关键路径降到 ~max(1.5, 2.95)+setup ≈ 3.2ns，clears 4.5ns 与 4.0ns。`LATENCY` 由 `LEVELS+1`→`LEVELS+2`，`vpipe_q` 自动跟随。
+
+**为何 bit-exact**：消费方 `flash_core.sv:317/394` 按 `dot_out_valid` 计数收点积、PS_FEED 收满 `prod_vcnt` 才退出 = **延迟无关**；加一级纯流水只改时序不改数值。q_vec 在一次 feed 内恒定、k_vec 同延一拍 → q[d]·k[d] 对齐不变。
+
+**实测**：全规模 md5==`01697fe8`（== baseline 逐字节），cycles `260417→260420`（**dot-split 单独仅 +3**，排空被 producer/consumer ping-pong 吞掉）。
+
+**残余（4.5ns 仍需处理）**：`u_norm_s1_recip`（4774ps）、`u_combine s2_prod`（4764ps）两锥未动 → 4.5ns 约 −470ps，靠 high effort 补；补不上则同法各拆一级（操作数/中间值寄存）。
