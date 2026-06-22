@@ -64,7 +64,24 @@ baseline 实测输出 md5）。`run_fullsize_vectors.sh` 内置的 `cmp vs tb/ve
 > `9199ccb` E-split 时它就是 Path 1，MET 仅 +1ps；这次才让位给 DMA 写路径）。它在 5ns 的 slack 只知
 > ≥+5ps，很可能在低几百 ps —— **这才可能是真正的 4ns 闸门**。
 
-**Step 0（秒级、最便宜、决定要不要往下跑）——重报现有冻结网表的 Path 2..N，不用重综合：**
+> ### ⚠️ 2026-06-22 Path 2..50 实测结论（已在冻结 .db 上 report_timing -max_paths 50 跑出）——4ns 被计算核挡住，rd_beat_pipe 单独不够
+>
+> Top-50 路径分两类：
+> - **A 类（DMA 输入写）**：`m_axi_rvalid → v_buf2`，data 3365ps + 输入延迟 1500ps，+5~+32ps。rd_beat_pipe 能切。
+> - **B 类（内部 reg→reg 计算，约 20+/50 条）**：`feed_idx → u_dot_node_q`（点积树，data **4778ps**，+13ps）、
+>   `emit_index → u_norm_s1_recip`（归一化倒数，**4774ps**，+31ps）、`u_combine s1_w → s2_prod`（softmax 乘，**4764ps**，+34ps）。
+>
+> **设计是"双重共限"的 5ns 墙**：A 类 `1500+3365+130≈4995ps`、B 类 `4778+209≈4987ps`，两者都卡 ~5.0ns。
+> rd_beat_pipe 只拆 A；拆完新关键路径立即变成 B 类 Path 6（点积树 ≈4.99ns）→ **Fmax 几乎零提升**。
+> B 类 4ns slack ≈ 5ns slack − 1000ps = **全部 −960~−990ps**。
+>
+> **⇒ 4ns 需把点积树 + 归一化 + softmax 三个独立深逻辑锥各砍 ~1000ps（21%）= 多模块插流水重构**，
+> 后果：cycles 涨（吃 40k/15% 裕度）+ 面积涨（吃 18% 裕度）+ bit-exact 重验 ×3 + retiming 已到极限。
+> **可达性下修到 ~10-15%、高风险。结论：5ns 是本核频率上限，提交 `bonus-v2-5ns-core`（5ns+bonus）；
+> rd_beat_pipe 已验证存档，但单独无软分价值，仅在愿意配套重构计算核时才用。**
+> 若仍要冲 4ns：先动主导项 **点积树 `dot_stream`**（占 top-50 约 20 条），再 norm、combine。
+
+**（历史保留）Step 0（秒级）——重报现有冻结网表的 Path 2..N，不用重综合：**
 ```tcl
 # 在 EDA 机上 restore 冻结网表（或综合后立即报），5ns 约束不变：
 report_timing -max_paths 100 -nworst 100 -path_type full_clock   ;# 看 Path 2..100 的真实 slack
