@@ -137,6 +137,28 @@ module dma_controller #(
     integer comb_col;
     integer comb_index;
 
+    // ---- rd-beat write pipeline (4ns critical-path fix) -------------------------
+    // Register the accepted AXI read beat + its decoded destination ONE cycle before
+    // the *_buf 16-row write-decode, splitting the long
+    //   m_axi_rvalid -> axi_master_read -> 16:1 row mux -> v_buf2_reg
+    // path (frozen 5ns critical path, 3365ps @ +5ps slack). Uniform 1-cycle delay on
+    // the buffer write only; FSM/handshake timing is unchanged. Bit-exact rationale:
+    // KV consumers read either through a register (flash_core v_row_q) or low-index
+    // first (k_tile[feed_idx], feed_idx 0..BK-1), so the freshly written high row is
+    // read many cycles later. The only same-cycle reads are (a) ST_WAIT_Q latching
+    // all q_data and (b) the S_IDLE prefetch-promote reading v_buf2 -> both covered
+    // by a 1-cycle drain (q_present_drain_q / pf_drain_q).
+    localparam logic [2:0] BDST_NONE = 3'd0, BDST_Q = 3'd1, BDST_K = 3'd2,
+                           BDST_V = 3'd3, BDST_PFK = 3'd4, BDST_PFV = 3'd5;
+    logic                  beat_vld_q;
+    logic [63:0]           beat_data_q;
+    logic [2:0]            beat_dst_q;
+    logic [TILE_IDX_W-1:0] beat_row_q;
+    logic [BEAT_W-1:0]     beat_bidx_q;
+    logic                  q_present_drain_q;  // 1-cyc drain: q_data_valid lags last q_buf commit
+    logic                  pf_drain_q;         // 1-cyc drain: pf_valid_q lags last v_buf2 commit
+    integer cm_row, cm_word, cm_col;
+
     always_comb begin
         q_req_ready  = (state_q == S_IDLE);
         kv_req_ready = (state_q == S_IDLE);
@@ -211,6 +233,9 @@ module dma_controller #(
             tile_row_idx_q <= '0;
             beat_idx_q    <= '0;
             error         <= 1'b0;
+            beat_vld_q        <= 1'b0;
+            q_present_drain_q <= 1'b0;
+            pf_drain_q        <= 1'b0;
 
             for (seq_col = 0; seq_col < D_MODEL; seq_col = seq_col + 1) begin
                 q_buf[seq_col] <= '0;
@@ -236,12 +261,69 @@ module dma_controller #(
                 kv_consume_pending_q <= 1'b0;
                 pf_start_q     <= '0;
                 pf_len_q       <= '0;
+                beat_vld_q        <= 1'b0;
+                q_present_drain_q <= 1'b0;
+                pf_drain_q        <= 1'b0;
                 for (pf_row = 0; pf_row < BK; pf_row = pf_row + 1)
                     for (pf_col = 0; pf_col < D_MODEL; pf_col = pf_col + 1) begin
                         k_buf2[pf_row][pf_col] <= '0;
                         v_buf2[pf_row][pf_col] <= '0;
                     end
             end else begin
+                // ---- rd-beat commit stage: 1-cycle-delayed buffer write-decode ----
+                // Writes the beat registered last cycle into its decoded buffer. This
+                // is the flop->decode->array half of the split critical path; the
+                // m_axi_rvalid->register half is now short.
+                if (beat_vld_q) begin
+                    case (beat_dst_q)
+                        BDST_Q: begin
+                            for (cm_word = 0; cm_word < WORDS_PER_BEAT; cm_word = cm_word + 1) begin
+                                cm_col = (beat_bidx_q * WORDS_PER_BEAT) + cm_word;
+                                if (cm_col < D_MODEL)
+                                    q_buf[cm_col] <= beat_data_q[(cm_word * DATA_W) +: DATA_W];
+                            end
+                        end
+                        BDST_K: begin
+                            for (cm_row = 0; cm_row < BK; cm_row = cm_row + 1)
+                                if (cm_row == beat_row_q)
+                                    for (cm_word = 0; cm_word < WORDS_PER_BEAT; cm_word = cm_word + 1) begin
+                                        cm_col = (beat_bidx_q * WORDS_PER_BEAT) + cm_word;
+                                        if (cm_col < D_MODEL)
+                                            k_buf[cm_row][cm_col] <= beat_data_q[(cm_word * DATA_W) +: DATA_W];
+                                    end
+                        end
+                        BDST_V: begin
+                            for (cm_row = 0; cm_row < BK; cm_row = cm_row + 1)
+                                if (cm_row == beat_row_q)
+                                    for (cm_word = 0; cm_word < WORDS_PER_BEAT; cm_word = cm_word + 1) begin
+                                        cm_col = (beat_bidx_q * WORDS_PER_BEAT) + cm_word;
+                                        if (cm_col < D_MODEL)
+                                            v_buf[cm_row][cm_col] <= beat_data_q[(cm_word * DATA_W) +: DATA_W];
+                                    end
+                        end
+                        BDST_PFK: begin
+                            for (cm_row = 0; cm_row < BK; cm_row = cm_row + 1)
+                                if (cm_row == beat_row_q)
+                                    for (cm_word = 0; cm_word < WORDS_PER_BEAT; cm_word = cm_word + 1) begin
+                                        cm_col = (beat_bidx_q * WORDS_PER_BEAT) + cm_word;
+                                        if (cm_col < D_MODEL)
+                                            k_buf2[cm_row][cm_col] <= beat_data_q[(cm_word * DATA_W) +: DATA_W];
+                                    end
+                        end
+                        BDST_PFV: begin
+                            for (cm_row = 0; cm_row < BK; cm_row = cm_row + 1)
+                                if (cm_row == beat_row_q)
+                                    for (cm_word = 0; cm_word < WORDS_PER_BEAT; cm_word = cm_word + 1) begin
+                                        cm_col = (beat_bidx_q * WORDS_PER_BEAT) + cm_word;
+                                        if (cm_col < D_MODEL)
+                                            v_buf2[cm_row][cm_col] <= beat_data_q[(cm_word * DATA_W) +: DATA_W];
+                                    end
+                        end
+                        default: ;
+                    endcase
+                end
+                beat_vld_q <= 1'b0;  // default; RECV states re-assert on accept
+
                 unique case (state_q)
                     S_IDLE: begin
                         beat_idx_q <= '0;
@@ -297,19 +379,19 @@ module dma_controller #(
 
                     S_Q_RD_RECV: begin
                         if (rd_data_valid && rd_data_ready) begin
-                            for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                seq_col = beat_idx_q;
-                                seq_col = (seq_col * WORDS_PER_BEAT) + seq_word;
-                                if (seq_col < D_MODEL) begin
-                                    q_buf[seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
-                                end
-                            end
+                            beat_vld_q  <= 1'b1;
+                            beat_data_q <= rd_data;
+                            beat_dst_q  <= BDST_Q;
+                            beat_bidx_q <= beat_idx_q;
 
                             if (rd_last || (beat_idx_q == ROW_BEATS - 1)) begin
-                                state_q <= S_Q_PRESENT;
+                                q_present_drain_q <= 1'b1;   // hold 1 cyc: present after last q_buf commit
                             end else begin
                                 beat_idx_q <= beat_idx_q + 1'b1;
                             end
+                        end else if (q_present_drain_q) begin
+                            q_present_drain_q <= 1'b0;
+                            state_q <= S_Q_PRESENT;
                         end
                     end
 
@@ -328,16 +410,11 @@ module dma_controller #(
 
                     S_K_RD_RECV: begin
                         if (rd_data_valid && rd_data_ready) begin
-                            for (dec_row = 0; dec_row < BK; dec_row = dec_row + 1) begin
-                                if (dec_row == tile_row_idx_q) begin
-                                    for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                        seq_col = (beat_idx_q * WORDS_PER_BEAT) + seq_word;
-                                        if (seq_col < D_MODEL) begin
-                                            k_buf[dec_row][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
-                                        end
-                                    end
-                                end
-                            end
+                            beat_vld_q  <= 1'b1;
+                            beat_data_q <= rd_data;
+                            beat_dst_q  <= BDST_K;
+                            beat_row_q  <= tile_row_idx_q;
+                            beat_bidx_q <= beat_idx_q;
 
                             if (rd_last || (beat_idx_q == ROW_BEATS - 1)) begin
                                 if ((tile_row_idx_q + 1'b1) < kv_len_q) begin
@@ -364,16 +441,11 @@ module dma_controller #(
 
                     S_V_RD_RECV: begin
                         if (rd_data_valid && rd_data_ready) begin
-                            for (dec_row = 0; dec_row < BK; dec_row = dec_row + 1) begin
-                                if (dec_row == tile_row_idx_q) begin
-                                    for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                        seq_col = (beat_idx_q * WORDS_PER_BEAT) + seq_word;
-                                        if (seq_col < D_MODEL) begin
-                                            v_buf[dec_row][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
-                                        end
-                                    end
-                                end
-                            end
+                            beat_vld_q  <= 1'b1;
+                            beat_data_q <= rd_data;
+                            beat_dst_q  <= BDST_V;
+                            beat_row_q  <= tile_row_idx_q;
+                            beat_bidx_q <= beat_idx_q;
 
                             if (rd_last || (beat_idx_q == ROW_BEATS - 1)) begin
                                 if ((tile_row_idx_q + 1'b1) < kv_len_q) begin
@@ -419,15 +491,11 @@ module dma_controller #(
                     S_PF_K_RECV: begin
                         if (kv_data_ready) kv_consume_pending_q <= 1'b1;
                         if (rd_data_valid && rd_data_ready) begin
-                            for (dec_row = 0; dec_row < BK; dec_row = dec_row + 1) begin
-                                if (dec_row == tile_row_idx_q) begin
-                                    for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                        seq_col = (beat_idx_q * WORDS_PER_BEAT) + seq_word;
-                                        if (seq_col < D_MODEL)
-                                            k_buf2[dec_row][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
-                                    end
-                                end
-                            end
+                            beat_vld_q  <= 1'b1;
+                            beat_data_q <= rd_data;
+                            beat_dst_q  <= BDST_PFK;
+                            beat_row_q  <= tile_row_idx_q;
+                            beat_bidx_q <= beat_idx_q;
                             if (rd_last || (beat_idx_q == ROW_BEATS - 1)) begin
                                 if ((tile_row_idx_q + 1'b1) < pf_len_q) begin
                                     tile_row_idx_q <= tile_row_idx_q + 1'b1; beat_idx_q <= '0; state_q <= S_PF_K_REQ;
@@ -446,30 +514,31 @@ module dma_controller #(
                     S_PF_V_RECV: begin
                         if (kv_data_ready) kv_consume_pending_q <= 1'b1;
                         if (rd_data_valid && rd_data_ready) begin
-                            for (dec_row = 0; dec_row < BK; dec_row = dec_row + 1) begin
-                                if (dec_row == tile_row_idx_q) begin
-                                    for (seq_word = 0; seq_word < WORDS_PER_BEAT; seq_word = seq_word + 1) begin
-                                        seq_col = (beat_idx_q * WORDS_PER_BEAT) + seq_word;
-                                        if (seq_col < D_MODEL)
-                                            v_buf2[dec_row][seq_col] <= rd_data[(seq_word * DATA_W) +: DATA_W];
-                                    end
-                                end
-                            end
+                            beat_vld_q  <= 1'b1;
+                            beat_data_q <= rd_data;
+                            beat_dst_q  <= BDST_PFV;
+                            beat_row_q  <= tile_row_idx_q;
+                            beat_bidx_q <= beat_idx_q;
                             if (rd_last || (beat_idx_q == ROW_BEATS - 1)) begin
                                 if ((tile_row_idx_q + 1'b1) < pf_len_q) begin
                                     tile_row_idx_q <= tile_row_idx_q + 1'b1; beat_idx_q <= '0; state_q <= S_PF_V_REQ;
                                 end else begin
-                                    // shadow now holds the prefetched tile
-                                    tile_row_idx_q <= '0; beat_idx_q <= '0; pf_valid_q <= 1'b1;
-                                    // if the core already released the current tile mid-prefetch,
-                                    // go idle so its pending next-request hits the shadow.
-                                    if (kv_consume_pending_q || kv_data_ready) begin
-                                        kv_consume_pending_q <= 1'b0; state_q <= S_IDLE;
-                                    end else begin
-                                        state_q <= S_KV_PRESENT;
-                                    end
+                                    // last row captured; hold 1 cyc so pf_valid_q is asserted
+                                    // AFTER the last v_buf2 commit lands (the S_IDLE promote
+                                    // reads v_buf2 the same cycle it sees pf_valid_q).
+                                    tile_row_idx_q <= '0; beat_idx_q <= '0; pf_drain_q <= 1'b1;
                                 end
                             end else beat_idx_q <= beat_idx_q + 1'b1;
+                        end else if (pf_drain_q) begin
+                            // shadow now holds the prefetched tile
+                            pf_drain_q <= 1'b0; pf_valid_q <= 1'b1;
+                            // if the core already released the current tile mid-prefetch,
+                            // go idle so its pending next-request hits the shadow.
+                            if (kv_consume_pending_q || kv_data_ready) begin
+                                kv_consume_pending_q <= 1'b0; state_q <= S_IDLE;
+                            end else begin
+                                state_q <= S_KV_PRESENT;
+                            end
                         end
                     end
 
