@@ -23,54 +23,54 @@
 
 ---
 
-## 0. 关键文档（评分口径 / 综合排错）
+## 0. 提交候选总览（真实 Genus 实测 PPA）
 
-- 🚀 **[Ceiling-Push 改动证据（commit `f586c52`，本次）](reports/ceiling_push_evidence.md)** — 在已闭合
-  5ns 时序的 v2 上做两处 **bit-exact** 结构改动以提升上限：(1) `softmax_combine` 的 16 路 tile-max
-  由 **15 级线性比较链 → 深度 4 平衡树**（缩短 +1ps 的 binding 关键路径，释放时序余量）；
-  (2) **`ACC_W 36→34`**（实测下限，−2bit 省面积）。两者全规模仿真 **md5 == `01697fe8` 逐字节一致**，
-  **cycles/精度不变**；同工作点（BQ6/5ns）对旧 v2 **严格占优**。综合默认现为 BQ6+ACC34+max树。
-- 📋 **[Project 2 官方要求](docs/project2_requirements.md)** — 摘自课程《Project 2 补充说明》
-  PDF（FlashAttention 赛题），基本要求 75% + 附加要求 25% 的权威评分口径、必需寄存器表、
-  正确性验收阈值（MAE≤0.03 / MaxE≤0.10）、ASIC 后端指标（面积 ≤200 万门、延迟 <300k cycles）。
-- 🛠 **[Genus 综合中断（TUI-234）排错](docs/genus_synthesis_troubleshooting.md)** — `syn_generic
-  -physical` 第二遍 generic 因 advstr 跨层级 group flash_core 的 `CDN_PAS_SKIP_MUX_0i` 而中断，
-  根因分析与已落地修复（修复在 `baseline-v2-synthopt` 分支）。
+> 评分口径（[官方要求](docs/project2_requirements.md)）：**面积 ≤200 万门**（= total_cell_area ≤ 9.59M µm²，硬约束）、
+> **cycles < 300k**（causal，硬约束）、**Fmax = 软分**（时钟越短越高）、**正确性 = 对 FP32 golden MAE≤0.03 / MaxE≤0.10**（不要求 bit-exact）。
+> Bonus = 25%，作为**独立版本逐条评估**（实现 + 仿真 + 证据）。
+
+| 分支 | 时钟 | 面积 | 违例 | cycles | 对 FP32 | Bonus | 来源 | 提交角色 |
+|---|---|---|---|---|---|---|---|---|
+| **`submit-4p5ns-clean`** | **4.5ns** | **81.2%**(1,623,669 门) | **0** | 260,420 | MaxE 0.055 ✅ | — | **真 Genus**（`reports_ispatial_4.500ns_*`） | **★主性能提交（Fmax 最高的干净核）** |
+| `baseline-v2-synthopt` | 5.0ns | 82.1%(1,641,283 门) | 0 | 259,791 | MaxE 0.055 ✅ | — | 真 Genus（FROZEN 报告） | 5ns 保底参考 |
+| `bonus-v2-5ns-core` | 5.0ns | 82.1%（bonus 全关） | 0 | 259,791 | ⚠️ 见下 | ✅ 9+1 项 | 本地仿真 + 待 Genus | Bonus 独立版本 |
+| `8nsclean-baseline` / `8nsclean-bonus` | 8.0ns | ~81.8% | 0 | — | — | bonus 版有 | 真 Genus（历史） | 备份 |
+
+- 🚀 **4.5ns 干净核（`submit-4p5ns-clean`，真 Genus 验证）**：在冻结 5ns 核上做两处 **bit-exact** 结构改动切短关键路径：
+  (1) **rd_beat_pipe** — DMA AXI 读 beat 在写 `*_buf` 前打一拍（切开 `m_axi_rvalid→v_buf` 关键路径）；
+  (2) **dot-split** — `dot_stream` 操作数寄存级（把 k_tile mux 从 16×16 乘法里拆出）。
+  两者全规模 **md5 == `01697fe8` 逐字节一致**、cycles +629（0.24%），SDC 4.5ns + high effort 综合：**0 违例 / 81.2% 面积**（比 5ns 还小）。详见 [`docs/synth_4ns_rdpipe_handoff.md`](docs/synth_4ns_rdpipe_handoff.md)。
+- ⚠️ **Bonus 核已知问题**：`bonus-v2-5ns-core` 的 **bonus 全关路径**目前对 FP32 在 4 行（131/179/185/234）超容差（MaxE 33）——此为 bonus 集成时引入、与 4.5ns 改动无关；各 bonus **功能 smoke** 独立可用。修复进行中（见 `bonus-4p5ns-core` 分支）。
+- 📋 **[Project 2 官方要求](docs/project2_requirements.md)** — 权威评分口径、寄存器表、正确性阈值（MAE≤0.03 / MaxE≤0.10）、面积/延迟硬约束。
+- 🛠 **[Genus TUI-234 排错](docs/genus_synthesis_troubleshooting.md)** — `syn_generic -physical` 第二遍 advstr 跨层级 group `CDN_PAS_SKIP_MUX` 中断的根因 + 已落地修复（ungroup dma + dissolve advstr group）。
 
 ---
 
 ## 1. Project Overview
 
-本项目重点包括：
+FlashAttention-2 风格的流式定点加速器 IP（SystemVerilog）。已交付:
 
-- FlashAttention-style attention 计算
-- online softmax
-- K/V tiling
-- causal mask 支持
-- AXI4-Lite 控制接口
-- AXI4 Master / DMA 数据搬运
-- RTL 仿真验证
-- FP32 golden model 对比
-- 综合脚本与设计报告
+- 流式 online-softmax（running max/sum 递归 + 单遍归一化）
+- K/V tiling + 因果掩码 + 因果 tile 跳过
+- AXI4-Lite 控制 + AXI4 Master/DMA 搬运（含 KV 预取双缓冲）
+- 真 Genus iSpatial 综合（sky130_fd_sc_hs）：**4.5ns / 0 违例 / 81.2% 面积**两硬约束全过
+- FP32 golden 对拍验证（MAE≤0.03 / MaxE≤0.10）
+- 10 项 Bonus（BF16/FP8 FP 单元、多头、可配序列、padding mask、其他定点格式、dropout、INT8/FP8 块量化、AXI-Stream、DMA/任务队列、滑动窗口）
 
-整体目标不是一开始追求最高性能，而是先完成一个 **正确、可验证、可提交、可扩展** 的 baseline 版本。
+设计哲学：先 **正确、可验证、可综合**，再沿 **Fmax 软分轴**（5ns→4.5ns）逐步推进，全程 bit-exact 守住正确性。
 
 ---
 
-## 2. Baseline Configuration
-
-当前 baseline 配置如下：
+## 2. Baseline / 提交配置
 
 ```text
-S = 256
-D = 64
-Batch = 1
-Head = 1
-BQ = 1
-BK = 16
+S = 256, D = 64, Batch = 1, Head = 1
+BQ = 6        # query-block 行数（cycles<300k 的最小 BQ,换最小面积）
+BK = 16       # K/V tile
 Q/K/V/O = Q8.8 signed fixed-point
-Dot-product accumulator = 40-bit 或 48-bit
-支持 causal mask
+ACC_W = 34   # 累加器位宽（实测下限:点积需 34 位,见 memory）
+SOFTMAX_FRAC = 16
+支持 causal mask + 因果 tile 跳过 + KV 预取
 禁止存储完整 attention score/probability matrix
 ```
 
