@@ -6,12 +6,14 @@ set DESIGN flash_attn_top
 
 set SCRIPT_DIR [file dirname [file normalize [info script]]]
 set ROOT_DIR   [file normalize [file join $SCRIPT_DIR ".."]]
-# Tag report/output dirs by clock period so a period sweep (8/6/5 ns) keeps each
-# run's evidence separate instead of overwriting.
+# Tag report/output dirs by clock period so a period sweep keeps each run's
+# evidence separate instead of overwriting. The default MUST track the SDC default
+# period (4.500 on this branch) so the dir name never lies about what was synthesized
+# -- otherwise a bare run drops 4.5ns evidence into a dir named "5.000ns".
 if {[info exists ::env(CLK_PERIOD_NS)]} {
     set PTAG [format "%sns" $::env(CLK_PERIOD_NS)]
 } else {
-    set PTAG "5.000ns"
+    set PTAG "4.500ns"
 }
 set RPT_DIR    [file join $SCRIPT_DIR "reports_ispatial_${PTAG}"]
 set OUT_DIR    [file join $SCRIPT_DIR "out_ispatial_${PTAG}"]
