@@ -1,13 +1,17 @@
 # constraints.sdc
 # Target: flash_attn_top, sky130_fd_sc_hs TT 25C 1.80V
 #
-# Clock period is parameterized. DEFAULT TARGET = 5.000 ns (the goal: 5 ns clean).
-# A bare `./run_genus.sh` therefore synthesizes at 5 ns directly.
-# Override only if you ever want another point, e.g. CLK_PERIOD_NS=8.0 ...
+# Clock period is parameterized via CLK_PERIOD_NS (env override unchanged).
+# DEFAULT on the 4ns-dma-rdpipe branch = 4.500 ns: rd_beat_pipe (DMA input write)
+# + dot-split (dot cone) clear the two dominant 5 ns walls, so a bare
+# `./synth/run_genus.sh` here targets 4.5 ns. (5 ns frozen baseline lives on
+# baseline-v2-synthopt; run CLK_PERIOD_NS=5.0 here to A/B against it.)
+# METHOD UNCHANGED: the IO-delay formula below is untouched, so it still auto-scales
+# at 30% of the period -> input/output delay = 1350 ps @4.5 ns (was 1500 ps @5 ns).
 if {[info exists ::env(CLK_PERIOD_NS)]} {
     set CLK_PERIOD $::env(CLK_PERIOD_NS)
 } else {
-    set CLK_PERIOD 5.000
+    set CLK_PERIOD 4.500
 }
 puts "INFO: SDC clock period = $CLK_PERIOD ns"
 

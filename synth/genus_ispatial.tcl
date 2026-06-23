@@ -6,12 +6,14 @@ set DESIGN flash_attn_top
 
 set SCRIPT_DIR [file dirname [file normalize [info script]]]
 set ROOT_DIR   [file normalize [file join $SCRIPT_DIR ".."]]
-# Tag report/output dirs by clock period so a period sweep (8/6/5 ns) keeps each
-# run's evidence separate instead of overwriting.
+# Tag report/output dirs by clock period so a period sweep keeps each run's
+# evidence separate instead of overwriting. The default MUST track the SDC default
+# period (4.500 on this branch) so the dir name never lies about what was synthesized
+# -- otherwise a bare run drops 4.5ns evidence into a dir named "5.000ns".
 if {[info exists ::env(CLK_PERIOD_NS)]} {
     set PTAG [format "%sns" $::env(CLK_PERIOD_NS)]
 } else {
-    set PTAG "5.000ns"
+    set PTAG "4.500ns"
 }
 set RPT_DIR    [file join $SCRIPT_DIR "reports_ispatial_${PTAG}"]
 set OUT_DIR    [file join $SCRIPT_DIR "out_ispatial_${PTAG}"]
@@ -114,14 +116,16 @@ check_timing > [file join $RPT_DIR 01_check_timing_pre_synth.rpt]
 if {[catch {set_db max_cpus_per_server 8} m]} { puts "WARN: max_cpus_per_server: $m" }
 if {[catch {set_db auto_super_thread   true} m]} { puts "WARN: auto_super_thread: $m" }
 
-# Effort settings. MEDIUM effort: now that softmax_combine is properly pipelined
-# (exp | multiply | accumulate split across registers), the 5 ns critical path is
-# feasible without the tool fighting it, so medium effort closes faster and avoids
-# the high-effort drive-up/clone area inflation. The genuine 8 ns baseline also
-# closed clean at medium. Bump back to high only if a medium run leaves small slack.
-set_db syn_generic_effort medium
-set_db syn_map_effort     medium
-set_db syn_opt_effort     medium
+# Effort settings. HIGH effort on the 4ns-dma-rdpipe branch (was MEDIUM on the 5 ns
+# baseline). Rationale: at 5 ns, medium closed clean and avoided high-effort
+# drive-up/clone area inflation. At 4.5 ns the RTL fixes (rd_beat_pipe + dot-split)
+# clear the two dominant walls but leave the norm/softmax cones ~470 ps short
+# (~10%) -- exactly the "medium leaves small slack -> bump to high" case noted here
+# originally. HIGH spends the ~18% area headroom to close that ~10% timing gap.
+# (For a 5 ns A/B on this branch, this stays high; flip to medium to match baseline.)
+set_db syn_generic_effort high
+set_db syn_map_effort     high
+set_db syn_opt_effort     high
 
 # Register retiming: allow Genus to rebalance the pipeline registers across the
 # dot_stream adder tree / combine datapath to hit a shorter period. Preserves
